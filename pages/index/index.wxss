@@ -11,6 +11,7 @@ page {
 
 .container {
   padding: 20rpx;
+  padding-bottom: 200rpx; /* 🌟 新增：给底部留出足够的安全距离 */
   display: flex;
   flex-direction: column;
   gap: 20rpx; /* 卡片之间的间距 */
@@ -24,12 +25,7 @@ page {
   box-shadow: 0 4rpx 12rpx rgba(0, 0, 0, 0.05); /* 微微的阴影 */
 }
 
-/* 标题 */
-.post-title {
-  font-size: 34rpx;
-  font-weight: bold;
-  color: #333333;
-}
+
 
 /* 描述 */
 .post-desc {
@@ -39,13 +35,7 @@ page {
   line-height: 1.5;
 }
 
-/* 标签区域 */
-.post-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12rpx;
-  margin-top: 20rpx;
-}
+
 
 /* 单个标签的样式 */
 .tag {
@@ -54,6 +44,34 @@ page {
   background-color: #e8f8ec;
   padding: 4rpx 16rpx;
   border-radius: 8rpx;
+}
+
+.post-header {
+  display: flex;
+  align-items: flex-start; /* 顶部对齐，防止高度拉扯 */
+  margin-bottom: 12rpx;
+}
+
+.category-tag {
+  font-size: 22rpx;
+  padding: 4rpx 12rpx;
+  border-radius: 6rpx;
+  margin-right: 12rpx;
+  font-weight: bold;
+  flex-shrink: 0; 
+  white-space: nowrap; 
+  height: 32rpx;        /* 🌟 给死高度 */
+  line-height: 32rpx;   /* 🌟 和高度一致，文字绝对居中 */
+  text-align: center;
+}
+
+.post-title {
+  font-size: 34rpx;
+  font-weight: bold;
+  color: #333333;
+  flex: 1; 
+  line-height: 40rpx;   /* 给标题一个行高 */
+  word-break: break-all; 
 }
 
 /* 底部区域 */

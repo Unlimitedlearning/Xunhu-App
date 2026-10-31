@@ -17,27 +17,37 @@ Page({
   },
 
   refreshList: function() {
-    // 1. 获取云端假数据
     let cloudPosts = mockData.postList || [];
-    
-    // 2. 获取本地未上传的草稿数据
     let localPosts = wx.getStorageSync('local_posts') || [];
     
-    // 3. 安全合并：判断如果是对象，才加上草稿标签
-    let localPostsWithTag = localPosts.map(function(item) {
-      // 防止缓存里出现奇怪的非对象数据导致报错
-      if (typeof item !== 'object' || item === null) return null; 
-      
+    const categoryMap = {
+      'team': '组队',
+      'resume': '自荐',
+      'partner': '搭子'
+    };
+
+    // 处理云端数据
+    let cloudPostsWithTag = cloudPosts.map(function(item) {
       let newItem = Object.assign({}, item);
-      newItem.isDraft = true;
+      newItem.CategoryText = categoryMap[newItem.PostCategory] || '其他';
       return newItem;
-    }).filter(function(item) {
-      return item !== null; // 过滤掉异常数据
     });
 
-    // 4. 拼接数组
-    let allPosts = localPostsWithTag.concat(cloudPosts);
+    // 处理本地数据
+    let localPostsWithTag = localPosts.map(function(item) {
+      if (typeof item !== 'object' || item === null) return null; 
+      let newItem = Object.assign({}, item);
+      newItem.isDraft = true;
+      newItem.CategoryText = categoryMap[newItem.PostCategory] || '其他'; 
+      return newItem;
+    }).filter(item => item !== null);
+
+    // 🌟 注意：allPosts 必须在这里定义！
+    let allPosts = localPostsWithTag.concat(cloudPostsWithTag);
     
+    // 🌟 调试代码必须放在定义之后！
+    console.log("当前渲染的数据：", allPosts);
+
     this.setData({
       postList: allPosts
     });

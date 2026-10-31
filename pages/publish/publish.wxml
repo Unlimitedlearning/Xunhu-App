@@ -1,6 +1,15 @@
 <!--pages/publish/publish.wxml-->
 <view class="container">
   <view class="form-group">
+    <text class="label">发布分类</text>
+    <picker bindchange="onCategoryChange" value="{{categoryIndex}}" range="{{categories}}">
+      <view class="picker-box">
+        {{categories[categoryIndex]}} <text class="arrow">▼</text>
+      </view>
+    </picker>
+  </view>
+
+  <view class="form-group">
     <text class="label">招募标题</text>
     <input class="input" placeholder="例如：挑战杯项目招前端" model:value="{{title}}" />
   </view>

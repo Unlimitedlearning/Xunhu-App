@@ -3,6 +3,9 @@
 
 Page({
   data: {
+    categories: ["组队", "自荐", "搭子"],
+    categoryKeys: ["team", "resume", "partner"], // 对应后端的真实值
+    categoryIndex: 0, // 默认选第一个
     title: "",
     desc: "",
     skillStr: ""
@@ -30,6 +33,12 @@ Page({
     }
   },
 
+  onCategoryChange: function(e) {
+    this.setData({
+      categoryIndex: e.detail.value
+    });
+  },
+
   submitPost: function () {
     if (!this.data.title || !this.data.desc) {
       wx.showToast({ title: '标题和描述不能为空', icon: 'none' });
@@ -41,6 +50,7 @@ Page({
     // 1. 组装数据，加上一个本地生成的唯一 ID 和时间
     const newPost = {
       id: 'local_' + Date.now(), 
+      PostCategory: this.data.categoryKeys[this.data.categoryIndex],
       title: this.data.title,
       desc: this.data.desc,
       tags: tags,

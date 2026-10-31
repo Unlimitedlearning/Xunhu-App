@@ -1,4 +1,6 @@
 // pages/publish/publish.js
+// 组队需求发布页
+
 Page({
   data: {
     title: "",

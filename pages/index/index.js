@@ -1,4 +1,6 @@
 // pages/index/index.js
+// 大厅界面
+
 const mockData = require("../../utils/mockData");
 
 Page({

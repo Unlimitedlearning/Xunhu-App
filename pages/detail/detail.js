@@ -1,4 +1,5 @@
 // pages/detail/detail.js
+// 详情页
 
 Page({
   data: {

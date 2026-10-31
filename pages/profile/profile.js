@@ -1,4 +1,6 @@
 // pages/profile/profile.js
+// 个人页
+
 Page({
   data: {
     // 这里放数据

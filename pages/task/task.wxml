@@ -1,2 +1,7 @@
 <!--pages/task/task.wxml-->
-<text>pages/task/task.wxml</text>
+
+<view class="empty-state">
+  <text class="icon">📭</text>
+  <view class="text">你还没有加入任何项目哦～</view>
+  <view class="sub-text">去“大厅”寻找志同道合的队友吧！</view>
+</view>

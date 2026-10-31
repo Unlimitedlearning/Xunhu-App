@@ -1,0 +1,19 @@
+<!--pages/publish/publish.wxml-->
+<view class="container">
+  <view class="form-group">
+    <text class="label">招募标题</text>
+    <input class="input" placeholder="例如：挑战杯项目招前端" model:value="{{title}}" />
+  </view>
+
+  <view class="form-group">
+    <text class="label">项目描述</text>
+    <textarea class="textarea" placeholder="详细描述一下项目需求、目前进度、以及需要队友做什么..." model:value="{{desc}}" maxlength="200"></textarea>
+  </view>
+
+  <view class="form-group">
+    <text class="label">所需技能 (用空格隔开)</text>
+    <input class="input" placeholder="例如：Vue C语言 画图" model:value="{{skillStr}}" />
+  </view>
+
+  <button class="submit-btn" type="primary" bindtap="submitPost">发布招募</button>
+</view>

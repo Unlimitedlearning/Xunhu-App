@@ -1,0 +1,110 @@
+/*pages\index\index.wxss */
+page {
+  height: 100vh;
+  background-color: #f5f5f5; /* 背景颜色 */
+}
+
+.scrollarea {
+  /* 使用 calc 计算高度，减去底部导航栏和悬浮按钮的空间 */
+  height: calc(100vh - 150rpx); 
+}
+
+.container {
+  padding: 20rpx;
+  display: flex;
+  flex-direction: column;
+  gap: 20rpx; /* 卡片之间的间距 */
+}
+
+/* 卡片整体样式 */
+.post-card {
+  background-color: #ffffff;
+  border-radius: 16rpx;
+  padding: 24rpx;
+  box-shadow: 0 4rpx 12rpx rgba(0, 0, 0, 0.05); /* 微微的阴影 */
+}
+
+/* 标题 */
+.post-title {
+  font-size: 34rpx;
+  font-weight: bold;
+  color: #333333;
+}
+
+/* 描述 */
+.post-desc {
+  font-size: 28rpx;
+  color: #666666;
+  margin-top: 12rpx;
+  line-height: 1.5;
+}
+
+/* 标签区域 */
+.post-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12rpx;
+  margin-top: 20rpx;
+}
+
+/* 单个标签的样式 */
+.tag {
+  font-size: 24rpx;
+  color: #07c160; /* 微信绿 */
+  background-color: #e8f8ec;
+  padding: 4rpx 16rpx;
+  border-radius: 8rpx;
+}
+
+/* 底部区域 */
+.post-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 24rpx;
+  padding-top: 20rpx;
+  border-top: 1rpx solid #eeeeee;
+}
+
+.author {
+  font-size: 24rpx;
+  color: #999999;
+}
+
+/* 了解详情按钮（目前只是文字） */
+.join-btn {
+  font-size: 26rpx;
+  color: #ffffff;
+  background-color: #07c160;
+  padding: 8rpx 24rpx;
+  border-radius: 30rpx;
+}
+
+/* 拖拽区域 */
+.movable-area {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none; /* 关键：让透明区域不阻挡下方列表的滑动 */
+  z-index: 99;
+}
+
+/* 按钮本身 */
+.fab-btn {
+  pointer-events: auto; /* 关键：按钮本身可以被点击和拖拽 */
+  position: absolute;
+  bottom: 120rpx;
+  right: 40rpx;
+  width: 100rpx;
+  height: 100rpx;
+  background-color: #07c160;
+  color: #fff;
+  border-radius: 50%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  font-size: 60rpx;
+  box-shadow: 0 8rpx 20rpx rgba(0,0,0,0.2);
+}

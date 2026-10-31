@@ -1,0 +1,5 @@
+<!--pages/detail/detail.wxml-->
+<view class="detail-container">
+  <view class="header">项目详情</view>
+  <view class="info">当前项目 ID: {{projectId}}</view>
+</view>

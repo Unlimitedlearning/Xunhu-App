@@ -1,0 +1,13 @@
+/* pages/detail/detail.wxss */
+
+.detail-container{
+  padding: 30rpx;
+}
+.header{
+  font-size: 40rpx;
+  font-weight: bold;
+}
+.info{
+  margin-top: 20rpx;
+  color: #07c160;
+}

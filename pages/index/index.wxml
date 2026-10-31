@@ -1,0 +1,48 @@
+<!-- pages\index\index.wxml -->
+
+<movable-area class="movable-area">
+  <!-- “发布”悬浮按钮 -->
+  <movable-view class="fab-btn" direction="all" bindtap="goToPublish" inertia="true">
+    <text>+</text>
+  </movable-view>
+</movable-area>
+
+<!-- 这是一个可滚动的区域 -->
+<scroll-view class="scrollarea" scroll-y type="list">
+  <view class="container">
+    
+    <!-- 需求列表区域 -->
+    <view class="post-list">
+      <!-- 单个卡片循环 -->
+      <view class="post-card" 
+            wx:for="{{postList}}" 
+            wx:key="id" 
+            bindtap="goToDetail" 
+            data-id="{{item.id}}">
+      
+        <!-- 标题行 -->
+        <view class="post-header">
+          <text class="post-title">{{item.title}}</text>
+        </view>
+      
+        <!-- 描述文字 -->
+        <view class="post-desc">{{item.desc}}</view>
+      
+        <!-- 技能标签行 -->
+        <view class="post-tags">
+          <text class="tag" wx:for="{{item.tags}}" wx:for-item="tag" wx:key="*this">{{tag}}</text>
+        </view>
+      
+        <!-- 底部发布者信息 -->
+        <view class="post-footer">
+          <text class="author">发布人：{{item.author}}</text>
+          <text class="join-btn">了解详情</text>
+        </view>
+
+      </view>
+      <!-- 循环结束 -->
+    </view>
+
+  </view>
+</scroll-view>
+

@@ -11,20 +11,49 @@
   <!-- 已登录 -->
   <block wx:else>
 
-    <!-- 个人信息 -->
+    <!-- 个人信息：昵称/学号/头像全部来自你自己填的资料，不再有内置演示身份 -->
     <view class="card">
       <view class="profile-header">
         <view class="avatar">{{avatarText}}</view>
         <view class="profile-info">
-          <view class="name">{{userName}}</view>
-          <view class="student-id">学号：{{studentId}}</view>
+          <view class="name">{{nickname ? nickname : '未设置昵称'}}</view>
+          <view class="student-id" wx:if="{{studentId}}">学号：{{studentId}}</view>
+          <view class="student-id" wx:else>学号：未填写</view>
         </view>
       </view>
     </view>
 
-    <!-- 简历 / 联系方式（可编辑） -->
+    <!-- 资料未完善：先提示，避免发布/申请时找不到展示名或联系方式 -->
+    <view class="notice-card" wx:if="{{!isProfileReady}}">
+      昵称、学号与联系方式都填好并保存后，才能在大厅发布需求、申请他人需求（否则队友无法联系您）。
+    </view>
+
+    <!-- 资料编辑：昵称 / 学号 / 简历 / 联系方式 -->
     <view class="card">
-      <view class="section-title">简历 / 技能描述</view>
+      <view class="section-title">昵称</view>
+      <input class="text-input"
+             placeholder="填一个同学们能认出你的名字"
+             maxlength="20"
+             value="{{nickname}}"
+             bindinput="onNicknameInput" />
+
+      <view class="section-title section-title-gap">学号<text class="required" wx:if="{{!isStudentIdBound}}">*</text></view>
+      <input class="text-input {{isStudentIdBound ? 'text-input-locked' : ''}}"
+             type="number"
+             disabled="{{isStudentIdBound}}"
+             placeholder="广工 10 位学号（31 开头）"
+             maxlength="10"
+             value="{{studentId}}"
+             bindinput="onStudentIdInput" />
+
+      <!-- 已绑定：输入框锁死，右侧只留一个极小的申诉入口 -->
+      <view class="student-bound-row" wx:if="{{isStudentIdBound}}">
+        <text class="tip tip-inline">已绑定，不可修改</text>
+        <text class="link-mini" catchtap="onStudentIdOccupied">学号被他人占用？</text>
+      </view>
+      <text class="tip" wx:else>用于本校学生身份认证，一个学号仅能绑定一个微信账号</text>
+
+      <view class="section-title section-title-gap">简历 / 技能描述</view>
       <textarea class="resume-input"
                 placeholder="介绍一下你的技能、项目经历，让同学更快认识你"
                 maxlength="300"
@@ -43,7 +72,7 @@
       <button class="save-btn" bindtap="saveProfile">保存资料</button>
     </view>
 
-    <!-- 收到的评价 -->
+    <!-- 收到的评价：暂无数据源（reviews 恒为空），不再塞静态演示评价 -->
     <view class="card">
       <view class="section-title">收到的评价</view>
       <view class="review-item" wx:for="{{reviews}}" wx:key="id">

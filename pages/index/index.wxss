@@ -201,6 +201,14 @@ page {
   white-space: nowrap;
 }
 
+/* ---------- 首次加载提示（云数据一次来回，不再用骨架屏） ---------- */
+.loading-text {
+  text-align: center;
+  font-size: 26rpx;
+  color: var(--color-sub, #8A8A8A);
+  padding: 60rpx 0;
+}
+
 /* ---------- 空状态：极简灰色提示卡片 ---------- */
 .empty-card {
   background-color: #fafbfc;
@@ -227,31 +235,37 @@ page {
   text-align: center;
 }
 
-/* 拖拽区域 */
-.movable-area {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 100vw;
-  height: 100vh;
-  pointer-events: none; /* 关键：让透明区域不阻挡下方列表的滑动 */
-  z-index: 99;
-}
-
-/* 按钮本身 */
+/* ---------- 固定悬浮「发布」按钮 ----------
+   已放弃 movable-area / movable-view 拖动方案：
+   1) 不再有覆盖整屏的拖拽层，列表滑动、TabBar 点击都不受影响；
+   2) 元素只占据自身 100rpx 圆形范围，命中区域即按钮本身；
+   3) position: fixed 相对页面可视区定位，原生 tabBar 在可视区之外，天然不会遮挡。 */
 .fab-btn {
-  pointer-events: auto; /* 关键：按钮本身可以被点击和拖拽 */
-  position: absolute;
-  bottom: 120rpx;
+  position: fixed;
   right: 40rpx;
+  bottom: 120rpx;
   width: 100rpx;
   height: 100rpx;
-  background-color: #07c160;
-  color: #fff;
   border-radius: 50%;
+  background-color: #07c160;
+  color: #ffffff;
   display: flex;
   justify-content: center;
   align-items: center;
+  box-shadow: 0 8rpx 20rpx rgba(0, 0, 0, 0.2);
+  z-index: 10; /* 仅需盖住卡片内容，不与原生 tabBar 竞争层级 */
+  transition: transform 0.1s ease, opacity 0.1s ease;
+}
+
+/* 点击反馈：轻微缩放代替拖动位移 */
+.fab-btn-hover {
+  transform: scale(0.94);
+  opacity: 0.9;
+}
+
+.fab-icon {
   font-size: 60rpx;
-  box-shadow: 0 8rpx 20rpx rgba(0,0,0,0.2);
+  line-height: 1;
+  /* 视觉微调：让 + 号在圆形里看着居中 */
+  transform: translateY(-2rpx);
 }

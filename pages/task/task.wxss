@@ -10,6 +10,51 @@ page {
   box-sizing: border-box;
 }
 
+/* 未登录 / 资料未完善：拦截提示卡（替代申请列表） */
+.guard-card {
+  background-color: #ffffff;
+  border-radius: var(--radius-card, 24rpx);
+  padding: 72rpx 40rpx;
+  box-shadow: var(--shadow-card, 0 4rpx 16rpx rgba(0, 0, 0, 0.03));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.guard-icon {
+  font-size: 64rpx;
+  line-height: 1;
+  margin-bottom: 20rpx;
+  opacity: 0.6;
+}
+
+.guard-title {
+  font-size: 32rpx;
+  font-weight: bold;
+  color: var(--color-title, #1A1A1A);
+  margin-bottom: 16rpx;
+}
+
+.guard-tip {
+  font-size: 26rpx;
+  color: var(--color-sub, #8A8A8A);
+  line-height: 1.7;
+  text-align: center;
+  margin-bottom: 32rpx;
+}
+
+.guard-btn {
+  width: 360rpx;
+  height: 80rpx;
+  line-height: 80rpx;
+  font-size: 28rpx;
+  font-weight: bold;
+  color: #ffffff;
+  background-color: #07c160;
+  border-radius: var(--radius-btn, 12rpx);
+  padding: 0;
+}
+
 /* 顶部 Tab */
 .tab-bar {
   display: flex;
@@ -105,11 +150,19 @@ page {
 /* 已同意的联系方式 */
 .contact-box {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8rpx;
   margin-top: 16rpx;
   padding: 16rpx 20rpx;
   background-color: #e8f8ec;
   border-radius: 12rpx;
+}
+
+.contact-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
 }
 
 .contact-label {

@@ -1,12 +1,5 @@
 <!-- pages/index/index.wxml -->
 
-<movable-area class="movable-area">
-  <!-- “发布”悬浮按钮 -->
-  <movable-view class="fab-btn" direction="all" bindtap="goToPublish" inertia="true">
-    <text>+</text>
-  </movable-view>
-</movable-area>
-
 <!-- 这是一个可滚动的区域：自带下拉刷新（页面本体不滚动，所以用 scroll-view 的 refresher） -->
 <scroll-view class="scrollarea"
              scroll-y
@@ -20,8 +13,11 @@
     <!-- 需求列表区域 -->
     <view class="post-list">
 
+      <!-- 首次拉云数据中：一行轻量提示，避免误显示空状态 -->
+      <view class="loading-text" wx:if="{{!loaded}}">正在加载最新寻呼…</view>
+
       <!-- 没有任何数据：灰色提示卡片 -->
-      <view class="empty-card" wx:if="{{postList.length === 0}}">
+      <view class="empty-card" wx:elif="{{postList.length === 0}}">
         <view class="empty-emoji">🗒️</view>
         <view class="empty-text">大厅目前空空如也，点击右下角 + 号，发布第一条招募吧！</view>
       </view>
@@ -68,3 +64,8 @@
 
   </view>
 </scroll-view>
+
+<!-- “发布”悬浮按钮：固定定位（放弃拖动），只占据自身 100rpx 圆形区域，不拦截列表滑动与 TabBar 点击 -->
+<view class="fab-btn" hover-class="fab-btn-hover" catchtap="goToPublish">
+  <text class="fab-icon">+</text>
+</view>

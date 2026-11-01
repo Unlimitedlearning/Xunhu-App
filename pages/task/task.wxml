@@ -1,6 +1,16 @@
 <!--pages/task/task.wxml-->
 <view class="page-container">
 
+  <!-- 未登录 / 资料未完善：暂时隐藏申请列表，只给一个去完善的入口 -->
+  <view class="guard-card" wx:if="{{!ready}}">
+    <view class="guard-icon">🔒</view>
+    <view class="guard-title">{{guardTitle}}</view>
+    <view class="guard-tip">{{guardTip}}</view>
+    <button class="guard-btn" bindtap="goProfile">去「我的」完善资料</button>
+  </view>
+
+  <block wx:else>
+
   <!-- 顶部 Tab -->
   <view class="tab-bar">
     <view class="tab-item {{activeTab === index ? 'tab-active' : ''}}"
@@ -26,8 +36,10 @@
 
       <!-- 已同意：才展示发帖人联系方式（pending / rejected 不渲染） -->
       <view class="contact-box" wx:if="{{item.isAccepted && item.contact}}">
-        <text class="contact-label">联系方式</text>
-        <text class="contact-value">{{item.contact}}</text>
+        <view class="contact-line">
+          <text class="contact-label">联系方式</text>
+          <text class="contact-value">{{item.contact}}</text>
+        </view>
       </view>
 
       <view class="card-footer">
@@ -56,10 +68,16 @@
         <text class="info-item">申请人：{{item.applicantName}}</text>
       </view>
 
-      <!-- 已同意：才展示申请人联系方式；pending 阶段绝对不能渲染 -->
-      <view class="contact-box" wx:if="{{item.isAccepted && item.contact}}">
-        <text class="contact-label">申请人联系方式</text>
-        <text class="contact-value">{{item.contact}}</text>
+      <!-- 已同意：才展示申请人联系方式与完整学号；pending 阶段绝对不能渲染 -->
+      <view class="contact-box" wx:if="{{item.isAccepted}}">
+        <view class="contact-line" wx:if="{{item.contact}}">
+          <text class="contact-label">申请人联系方式</text>
+          <text class="contact-value">{{item.contact}}</text>
+        </view>
+        <view class="contact-line" wx:if="{{item.studentId}}">
+          <text class="contact-label">申请人学号</text>
+          <text class="contact-value">{{item.studentId}}</text>
+        </view>
       </view>
 
       <!-- 待处理：提供同意 / 拒绝 -->
@@ -86,5 +104,7 @@
       <view class="sub-text">发布一条寻呼，让同学找到你</view>
     </view>
   </view>
+
+  </block>
 
 </view>

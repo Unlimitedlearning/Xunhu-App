@@ -18,12 +18,56 @@
     </view>
   </view>
 
-  <!-- 发起人 + 热度 -->
-  <view class="detail-card meta-card">
-    <view class="meta-row">
-      <text class="meta-label">发起人</text>
-      <text class="meta-value">{{post.authorName}}</text>
+  <!-- 发布者信息（名片）：申请人建立信任用 —— 简历 / 满意度 / 最近 3 条匿名评价 -->
+  <view class="detail-card author-card">
+    <view class="author-card-head">
+      <text class="author-card-title">发布者信息</text>
+      <!-- 评价满 3 条才给好评率，不足时只是“统计中” -->
+      <view class="author-rate" wx:if="{{authorCard.showRate}}">好评率 {{authorCard.reviewRate}}%</view>
+      <view class="author-rate author-rate-pending" wx:else>{{authorCard.reviewPendingText}}</view>
     </view>
+
+    <!-- 头像 + 昵称 -->
+    <view class="author-header">
+      <view class="author-avatar">{{authorCard.avatarText}}</view>
+      <view class="author-info">
+        <view class="author-name">{{authorCard.nickname ? authorCard.nickname : '这位同学'}}</view>
+        <view class="author-sub">{{reviewSubText}}</view>
+      </view>
+    </view>
+
+    <!-- 简历 / 技能描述：默认 3 行省略，点击展开 -->
+    <view class="resume-block" wx:if="{{authorCard.hasResume}}" bindtap="onToggleResume">
+      <view class="block-label">技能描述</view>
+      <view class="resume-text {{resumeExpanded ? '' : 'resume-collapsed'}}">{{authorCard.resume}}</view>
+      <view class="resume-toggle" wx:if="{{resumeLong}}">{{resumeExpanded ? '收起' : '展开全文'}}</view>
+    </view>
+    <view class="resume-block" wx:else>
+      <view class="block-label">技能描述</view>
+      <view class="resume-empty">{{resumeEmptyText}}</view>
+      <!-- 发帖人本人：这里直接告诉他别人看到的是什么，引导去完善 -->
+      <view class="resume-owner-tip" wx:if="{{isOwner}}">去「我的」页面填写简历 / 技能描述，申请人就能在这里看到你的能力介绍</view>
+    </view>
+
+    <!-- 最近 3 条收到的文字评价（匿名“某同学”，满意/不满意带颜色标签） -->
+    <view class="author-review-block">
+      <view class="block-label">最近评价</view>
+
+      <view class="author-review-item" wx:for="{{authorCard.reviews}}" wx:key="id">
+        <view class="author-review-head">
+          <text class="author-review-from">{{authorCard.anonymousName}}</text>
+          <text class="author-review-badge {{item.isGood ? 'badge-good' : 'badge-bad'}}">{{item.ratingText}}</text>
+          <text class="author-review-time" wx:if="{{item.createTimeText}}">{{item.createTimeText}}</text>
+        </view>
+        <view class="author-review-content">{{item.content}}</view>
+      </view>
+
+      <view class="author-review-empty" wx:if="{{authorCard.reviews.length === 0}}">{{reviewEmptyText}}</view>
+    </view>
+  </view>
+
+  <!-- 热度 / 联系方式（发起人昵称已在上面名片里展示，不再重复） -->
+  <view class="detail-card meta-card">
     <view class="meta-row">
       <text class="meta-label">热度</text>
       <text class="heat-value">🔥{{post.heat}}</text>

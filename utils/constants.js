@@ -30,7 +30,8 @@ const CLOUD_FUNCTIONS = {
   HEAT: 'heat',     // 热度原子自增
   PUBLISH: 'publish', // 发布：内容安全机审 + 直接上线（status = active）
   REPORT: 'report',  // 举报：写 reports + 帖子改 auditing
-  REVIEW: 'review'   // 评价：A 对 B 唯一记录（查重后 add / update），并回传匿名评价列表
+  REVIEW: 'review',  // 评价：A 对 B 唯一记录（查重后 add / update），并回传匿名评价列表
+  GET_AUTHOR_PROFILE: 'getAuthorProfile' // 详情页发布者名片：一次查 users 简历 + reviews 匿名统计
 };
 
 // 分类：英文枚举 -> 中文
@@ -74,6 +75,11 @@ const REVIEW_CONTENT_MAX = 50;          // 评价文本上限（WXML maxlength �
 const REVIEW_MIN_COUNT = 3;             // 收到评价少于 3 条时只显示「满意度统计中...」
 const REVIEW_PENDING_TEXT = '满意度统计中...';
 const REVIEW_ANONYMOUS_NAME = '某同学';  // 评价人一律匿名展示，不暴露昵称/openid
+
+// 详情页「发布者名片」：简历默认只显示 3 行，超过这个字数就出现「展开全文」
+const AUTHOR_RESUME_PREVIEW_CHARS = 60;
+const AUTHOR_RESUME_EMPTY_TEXT = '这位同学还没有填写简历 / 技能描述';
+const AUTHOR_REVIEW_EMPTY_TEXT = '还没有收到文字评价';
 
 // 评价选项：1 满意 / 0 不满意（rating 只允许这两个值，云端会再校验一次）
 const REVIEW_RATING_OPTIONS = [
@@ -249,6 +255,9 @@ module.exports = {
   REVIEW_PENDING_TEXT,
   REVIEW_ANONYMOUS_NAME,
   REVIEW_RATING_OPTIONS,
+  AUTHOR_RESUME_PREVIEW_CHARS,
+  AUTHOR_RESUME_EMPTY_TEXT,
+  AUTHOR_REVIEW_EMPTY_TEXT,
   APPLICATION_STATUS_MAP,
   AUTHOR_OPENID_MAP,
   // 违禁词库 + 净化匹配工具（前端 pages/publish 直接用，云函数里有一份同值副本）

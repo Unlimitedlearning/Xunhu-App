@@ -189,6 +189,51 @@ page {
   line-height: 1.6;
 }
 
+/* 简历引导横幅：比普通卡片更醒目（主色背景 + 左侧竖线），一进页面就能看到 */
+.resume-banner {
+  background-color: #e8f8ec;
+  border-left: 8rpx solid #07c160;
+  border-radius: var(--radius-card, 24rpx);
+  padding: 28rpx;
+  box-shadow: var(--shadow-card, 0 4rpx 16rpx rgba(0, 0, 0, 0.03));
+}
+
+.resume-banner-title {
+  font-size: 28rpx;
+  font-weight: bold;
+  color: #067a3f;
+  line-height: 1.5;
+}
+
+.resume-banner-text {
+  margin-top: 10rpx;
+  font-size: 24rpx;
+  color: #2f7a52;
+  line-height: 1.65;
+}
+
+.resume-banner-action {
+  margin-top: 14rpx;
+  font-size: 22rpx;
+  color: #067a3f;
+  font-weight: bold;
+  line-height: 1.5;
+}
+
+/* 章节标题旁的小徽章：告知「这段内容会公开展示」 */
+.badge-public {
+  display: inline-block;
+  margin-left: 12rpx;
+  font-size: 20rpx;
+  font-weight: normal;
+  line-height: 1;
+  color: #1e88e5;
+  background-color: #e6f0ff;
+  padding: 6rpx 12rpx;
+  border-radius: 6rpx;
+  vertical-align: middle;
+}
+
 .tip {
   display: block;
   font-size: 22rpx;

@@ -28,6 +28,13 @@
       昵称、学号与联系方式都填好并保存后，才能在大厅发布需求、申请他人需求（否则队友无法联系您）。
     </view>
 
+    <!-- 简历引导：这份描述会公开在详情页，写清楚才有人敢点「申请加入」 -->
+    <view class="resume-banner" wx:if="{{!resume}}">
+      <view class="resume-banner-title">✏️ 补一句简历 / 技能描述，更容易被选中</view>
+      <view class="resume-banner-text">你填写的这部分内容会以「发布者名片」形式，在寻呼详情页向所有同学公开展示（默认显示 3 行，可点击展开），并配上你收到的匿名评价与满意度，帮同学判断要不要与你合作。</view>
+      <view class="resume-banner-action">在下方「简历 / 技能描述」里写完，点保存资料即可生效</view>
+    </view>
+
     <!-- 资料编辑：昵称 / 学号 / 简历 / 联系方式 -->
     <view class="card">
       <view class="section-title">昵称<text class="required">*</text></view>
@@ -53,12 +60,14 @@
       </view>
       <text class="tip" wx:else>用于本校学生身份认证，一个学号仅能绑定一个微信账号</text>
 
-      <view class="section-title section-title-gap">简历 / 技能描述</view>
+      <view class="section-title section-title-gap">简历 / 技能描述<text class="badge-public">详情页公开展示</text></view>
       <textarea class="resume-input"
-                placeholder="介绍一下你的技能、项目经历，让同学更快认识你"
+                placeholder="介绍一下你的技能、项目经历（会公开展示在详情页「发布者名片」，默认只显示 3 行预览）"
                 maxlength="300"
                 value="{{resume}}"
                 bindinput="onResumeInput"></textarea>
+      <text class="tip" wx:if="{{resume}}">✓ 已公开在详情页「发布者名片」中展示</text>
+      <text class="tip" wx:else>这段描述会公开展示给所有浏览你帖子的同学；联系方式与学号不会公开</text>
 
       <view class="section-title section-title-gap">联系方式<text class="required">*</text></view>
       <input class="contact-input"

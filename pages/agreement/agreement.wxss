@@ -88,6 +88,17 @@ page {
   color: var(--color-sub, #8A8A8A);
 }
 
+/* 条款内的小标题（如「关于评价信息的展示」）：比章节标题小一号，左侧主色竖线分段 */
+.sub-title {
+  font-size: 28rpx;
+  font-weight: bold;
+  color: var(--color-title, #1A1A1A);
+  line-height: 1.6;
+  margin-top: 24rpx;
+  padding-left: 16rpx;
+  border-left: 6rpx solid #07c160;
+}
+
 .doc-footer {
   text-align: center;
   font-size: 24rpx;

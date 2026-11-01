@@ -5,10 +5,14 @@ page {
 
 .detail-container {
   padding: 24rpx;
-  padding-bottom: 180rpx; /* 给底部操作栏留出空间 */
+  /* 底部操作栏是 position:fixed，会盖住页面最后一块内容：
+     88rpx 按钮 + 上下 20rpx 内边距 + 手机底部安全区，再多留一点余量，
+     保证评价卡片最后一行能完整滑出来、不被按钮盖住 */
+  padding-bottom: calc(200rpx + env(safe-area-inset-bottom));
   display: flex;
   flex-direction: column;
   gap: 20rpx;
+  box-sizing: border-box;
 }
 
 /* 卡片 */
@@ -152,6 +156,211 @@ page {
   color: var(--color-sub, #8A8A8A);
   line-height: 1.5;
   padding: 0 10rpx;
+}
+
+/* ================= 发布者名片（简历 / 满意度 / 最近评价） ================= */
+
+/* 标题行：左边标题，右边满意度徐章 */
+.author-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24rpx;
+}
+
+.author-card-title {
+  font-size: 30rpx;
+  font-weight: bold;
+  color: var(--color-title, #1A1A1A);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* 好评率：绿色小徐章；不足 3 条时为灰色「满意度统计中...」 */
+.author-rate {
+  font-size: 24rpx;
+  font-weight: bold;
+  color: #07c160;
+  background-color: #e8f8ec;
+  padding: 6rpx 16rpx;
+  border-radius: 8rpx;
+  margin-left: 20rpx;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.author-rate-pending {
+  color: var(--color-sub, #8A8A8A);
+  background-color: #f5f6f8;
+  font-weight: normal;
+}
+
+/* 头像 + 昵称 */
+.author-header {
+  display: flex;
+  align-items: center;
+}
+
+/* 纯文字圆形头像：不依赖外链图片，也不会因图片 404 变破图 */
+.author-avatar {
+  width: 96rpx;
+  height: 96rpx;
+  border-radius: 50%;
+  background-color: #e8f8ec;
+  color: #07c160;
+  font-size: 38rpx;
+  font-weight: bold;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.author-info {
+  margin-left: 24rpx;
+  flex: 1;
+  min-width: 0;
+}
+
+.author-name {
+  font-size: 32rpx;
+  font-weight: bold;
+  color: var(--color-title, #1A1A1A);
+  word-break: break-all;
+}
+
+.author-sub {
+  margin-top: 8rpx;
+  font-size: 22rpx;
+  color: var(--color-sub, #8A8A8A);
+  line-height: 1.4;
+}
+
+/* 小标题：技能描述 / 最近评价 */
+.block-label {
+  font-size: 24rpx;
+  font-weight: bold;
+  color: var(--color-sub, #8A8A8A);
+  margin-bottom: 12rpx;
+}
+
+/* 简历块：整块可点（展开 / 收起），点击热区大一点 */
+.resume-block {
+  margin-top: 28rpx;
+  padding: 20rpx;
+  background-color: #f9fafb;
+  border-radius: 12rpx;
+}
+
+.resume-text {
+  font-size: 27rpx;
+  color: #444444;
+  line-height: 1.6;
+  word-break: break-all;
+  white-space: pre-wrap; /* 保留用户自己换行，但不折行溢出 */
+}
+
+/* 默认最多 3 行，超出省略号；展开后取消限制 */
+.resume-collapsed {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+
+.resume-toggle {
+  margin-top: 12rpx;
+  font-size: 24rpx;
+  color: #1e88e5;
+  text-align: right;
+}
+
+.resume-empty {
+  font-size: 26rpx;
+  color: #b0b0b0;
+  line-height: 1.6;
+}
+
+/* 发帖人本人视角：引导去完善简历 */
+.resume-owner-tip {
+  margin-top: 12rpx;
+  font-size: 22rpx;
+  color: #b26a00;
+  line-height: 1.5;
+}
+
+/* 最近评价 */
+.author-review-block {
+  margin-top: 28rpx;
+  padding-top: 24rpx;
+  border-top: 1rpx solid #f2f2f2;
+}
+
+.author-review-item {
+  padding: 16rpx 0;
+  border-bottom: 1rpx solid #f2f2f2;
+}
+
+.author-review-item:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.author-review-head {
+  display: flex;
+  align-items: center;
+  margin-bottom: 8rpx;
+}
+
+.author-review-from {
+  font-size: 24rpx;
+  color: #666666;
+  font-weight: bold;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* 满意 / 不满意：颜色区分，一眼能分辨 */
+.author-review-badge {
+  font-size: 20rpx;
+  line-height: 1;
+  padding: 6rpx 12rpx;
+  border-radius: 6rpx;
+  margin-left: 12rpx;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.badge-good {
+  color: #07c160;
+  background-color: #e8f8ec;
+}
+
+.badge-bad {
+  color: #e53935;
+  background-color: #fdeceb;
+}
+
+.author-review-time {
+  margin-left: auto;
+  padding-left: 16rpx;
+  font-size: 22rpx;
+  color: #bbbbbb;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.author-review-content {
+  font-size: 27rpx;
+  color: #333333;
+  line-height: 1.6;
+  word-break: break-all;
+}
+
+.author-review-empty {
+  font-size: 24rpx;
+  color: #b0b0b0;
+  padding: 8rpx 0 4rpx;
 }
 
 /* 底部操作栏 */

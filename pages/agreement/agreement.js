@@ -3,7 +3,7 @@
 
 Page({
   data: {
-    updateDate: '2026-11-01',
-    version: 'v1.1'
+    updateDate: '2026-11-02',
+    version: 'v1.2'
   }
 });

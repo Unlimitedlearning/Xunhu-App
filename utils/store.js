@@ -620,6 +620,8 @@ async function callUserFunction(data) {
   if (result.ok === false) {
     const err = new Error(result.message || 'user 云函数返回失败');
     err.code = result.code || '';
+    // 云端本地词库命中时会回传具体违规词，页面提示用（与 publish 的 hitWord 同一约定）
+    err.hitWord = result.hitWord || '';
     throw err;
   }
   return result;
@@ -892,6 +894,101 @@ function getReceivedReviews() {
   return cache.receivedReviews || { total: 0, goodCount: 0, rate: 0, list: [] };
 }
 
+/* ---------------- 发布者名片（详情页用，云函数 getAuthorProfile 一次查全） ----------------
+   为什么不做缓存：名片属于「别人的数据」，且每次进详情看的都是不同的人，
+   缓存只会在别人刚改完简历 / 刚收到新评价时给出过期结果，不划算。
+   一次 callFunction 同时拿 users 简历 + reviews 匿名统计，前端不做任何多表串联。 */
+
+// 兜底名片：云函数未部署 / 网络失败 / 对方没资料时，页面拿到的永远是这个完整结构（绝无 undefined）
+function emptyAuthorCard() {
+  return {
+    nickname: '',
+    avatarText: '',
+    resume: '',
+    hasResume: false,
+    reviewTotal: 0,
+    reviewGoodCount: 0,
+    reviewRate: 0,
+    showRate: false,
+    reviewPendingText: constants.REVIEW_PENDING_TEXT,
+    anonymousName: constants.REVIEW_ANONYMOUS_NAME,
+    reviews: []
+  };
+}
+
+// 云端结果 -> 页面字段：所有字段都做类型兜底，云端少给任何一个也不会让 wxml 取到 undefined
+function normalizeAuthorCard(result) {
+  const card = emptyAuthorCard();
+  const author = (result && result.author) || {};
+  const review = (result && result.review) || {};
+
+  const nickname = String(author.nickname || '');
+  const resume = String(author.resume || '');
+  const total = Number(review.total) || 0;
+
+  card.nickname = nickname;
+  card.avatarText = String(author.avatarText || (nickname ? nickname.slice(0, 1) : ''));
+  card.resume = resume;
+  card.hasResume = resume.trim() !== '';
+  card.reviewTotal = total;
+  card.reviewGoodCount = Number(review.goodCount) || 0;
+  card.reviewRate = Number(review.rate) || 0;
+  // 不足 REVIEW_MIN_COUNT 条时一律不展示好评率（与个人页同一套规则）
+  card.showRate = total >= constants.REVIEW_MIN_COUNT;
+  card.reviewPendingText = review.pendingText || constants.REVIEW_PENDING_TEXT;
+  card.anonymousName = review.anonymousName || constants.REVIEW_ANONYMOUS_NAME;
+  card.reviews = (Array.isArray(review.list) ? review.list : [])
+    .filter(function (item) { return !!item; })
+    .map(function (item, index) {
+      const isGood = item.rating === 1;
+      return {
+        id: (item.createTime || 0) + '_' + index,
+        isGood: isGood,
+        ratingText: item.ratingText || (isGood ? '满意' : '不满意'),
+        content: String(item.content || ''),
+        createTime: Number(item.createTime) || 0
+      };
+    });
+
+  return card;
+}
+
+/**
+ * 拉取发帖人的「发布者名片」：昵称 / 简历 / 满意度 / 最近 3 条匿名文字评价
+ * 失败一律返回空名片（不抛错），详情页因此永远不会因为名片而白屏。
+ * @param {{postId?:string, authorOpenid?:string}} input
+ * @return {Promise<object>} 结构见 emptyAuthorCard()
+ */
+async function fetchAuthorProfile(input) {
+  const postId = (input && input.postId) || '';
+  const authorOpenid = (input && input.authorOpenid) || '';
+  if (!postId && !authorOpenid) return emptyAuthorCard();
+
+  try {
+    await ensureInit();
+  } catch (err) {
+    console.warn('[store] 初始化失败，发布者名片降级为空：', err);
+  }
+
+  let res;
+  try {
+    res = await wx.cloud.callFunction({
+      name: CLOUD_FUNCTIONS.GET_AUTHOR_PROFILE,
+      data: { postId: postId, authorOpenid: authorOpenid }
+    });
+  } catch (err) {
+    console.warn('[store] getAuthorProfile 云函数调用失败（是否已上传并部署？）：', err);
+    return emptyAuthorCard();
+  }
+
+  const result = (res && res.result) || {};
+  if (!result.ok) {
+    console.warn('[store] 发布者名片返回失败 code=' + (result.code || '') + '：' + (result.message || ''));
+  }
+  // 失败时云端也会回空结构，走同一套归一化（等价于空名片），前端无需分叉
+  return normalizeAuthorCard(result);
+}
+
 /* ---------------- 登录态 ---------------- */
 
 function isLoggedIn() {
@@ -980,6 +1077,10 @@ module.exports = {
   submitReview,
   syncReceivedReviews,
   getReceivedReviews,
+
+  // 发布者名片（详情页，云函数 getAuthorProfile）
+  fetchAuthorProfile,
+  emptyAuthorCard,
 
   // auth
   isLoggedIn,

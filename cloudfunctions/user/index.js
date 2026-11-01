@@ -26,6 +26,111 @@ const COLLECTION = 'users';
 // 与小程序端 utils/constants.js 的 STUDENT_ID_REGEX 保持一致（云函数目录独立，无法 require 小程序文件）
 const STUDENT_ID_REGEX = /^31\d{8}$/;
 
+/* ---------------- 违禁词库 + 净化匹配（与 utils/constants.js 同值副本） ----------------
+ * 为什么写在云函数里：个人主体调不了微信机审（msgSecCheck 48001），本地词库就是主防线，
+ *   而客户端能被改包绕过，所以必须再有一份落在服务端。
+ * 简历 / 技能描述会在详情页「发布者名片」里公开展示，是黑产发广告（「加 V 代写」「日结 私聊」）的高发区，
+ * 因此昵称 / 简历 / 联系方式必须与发帖同一标准校验。
+ * 硬性约定：词条必须是纯文本（无空格 / 无标点 / 全小写）—— 匹配前会把文本里的空白与标点全删掉。
+ * 改词库时必须同步：utils/constants.js、cloudfunctions/publish、cloudfunctions/review、本文件。
+ */
+
+// 学术舞弊
+const ACADEMIC_FRAUD = ['代课', '代考', '代写', '替课', '替考', '论文买卖', '包过', '抢手'];
+
+// 诈骗与违规交易
+const FRAUD_SCAM = ['刷单', '兼职赚钱', '日结', '博彩', '赌球', '网贷', '裸贷', '套现', '洗钱'];
+
+// 隐私侵害
+const PRIVACY_VIOLATION = ['裸聊', '约炮', '开房', '身份证出售', '查开房记录'];
+
+const FORBIDDEN_WORDS = [].concat(ACADEMIC_FRAUD, FRAUD_SCAM, PRIVACY_VIOLATION);
+
+// 拼音兜底词库（防 dai ke / daikao 这类拼音规避），键 = 全拼小写，值 = 中文词
+const PINYIN_FORBIDDEN_MAP = {
+  daike: '代课',
+  daikao: '代考',
+  daixie: '代写',
+  tike: '替课',
+  tikao: '替考',
+  lunwenmaimai: '论文买卖',
+  baoguo: '包过',
+  qiangshou: '抢手',
+  shuadan: '刷单',
+  jianzhizhuanqian: '兼职赚钱',
+  rijie: '日结',
+  bocai: '博彩',
+  duqiu: '赌球',
+  wangdai: '网贷',
+  luodai: '裸贷',
+  taoxian: '套现',
+  xiqian: '洗钱',
+  luoliao: '裸聊',
+  yuepao: '约炮',
+  kaifang: '开房',
+  shenfenzhengchushou: '身份证出售',
+  chakaifangjilu: '查开房记录'
+};
+
+// 零宽字符 / BOM：会把「代课」拆成「代\u200B课」，先干掉
+const INVISIBLE_CHARS_REGEX = /[\u200B-\u200D\u2060\uFEFF]/g;
+
+// 全角 ASCII（ａ-ｚ ０-９ ！ 等）转半角：防「ｄａｉｋｅ」这类全角规避
+const FULLWIDTH_ASCII_REGEX = /[\uFF01-\uFF5E]/g;
+
+// 标点正则：优先用 Unicode 属性类 \p{P}，老运行时（不支持 u 标志）回退到手写全标点字符集
+const FALLBACK_PUNCTUATION_REGEX = /[!"#$%&'()*+,\-.\/:;<=>?@\[\\\]^_`{|}~，。、；：？！…—–～·「」『』【】《》〈〉（）〔〕［］｛｝“”‘’＄％＃＆＊＠＾＿＋－＝｜＼／＜＞※→←↑↓☆★○●◎◇◆□■△▲▽▼§¶©®™°±×÷]/g;
+
+const CLEAN_TEXT_REGEX = (function () {
+  try {
+    return new RegExp('[\\s\\p{P}]', 'gu');
+  } catch (err) {
+    return FALLBACK_PUNCTUATION_REGEX;
+  }
+})();
+
+/**
+ * 净化文本：小写 + 全角转半角 + 删零宽字符 + 删所有空白与标点
+ * 例：「代 课」「代*考」「ｄａｉｋｅ」净化后都能被词库命中
+ */
+function cleanText(text) {
+  return String(text === null || text === undefined ? '' : text)
+    .toLowerCase()
+    .replace(FULLWIDTH_ASCII_REGEX, function (ch) {
+      return String.fromCharCode(ch.charCodeAt(0) - 0xFEE0);
+    })
+    .replace(INVISIBLE_CHARS_REGEX, '')
+    .replace(CLEAN_TEXT_REGEX, '');
+}
+
+/**
+ * 违禁词校验（写入数据库前的最后一道）
+ * @return {{pass: boolean, word?: string, type?: string}}
+ */
+function checkTextViolation(text) {
+  const cleaned = cleanText(text);
+  if (!cleaned) return { pass: true };
+
+  // 1. 中文词库
+  for (let i = 0; i < FORBIDDEN_WORDS.length; i++) {
+    const word = FORBIDDEN_WORDS[i];
+    if (cleaned.indexOf(word) > -1) {
+      return { pass: false, word: word, type: 'word' };
+    }
+  }
+
+  // 2. 拼音兜底
+  const pinyinList = Object.keys(PINYIN_FORBIDDEN_MAP);
+  for (let j = 0; j < pinyinList.length; j++) {
+    const pinyin = pinyinList[j];
+    if (cleaned.indexOf(pinyin) > -1) {
+      return { pass: false, word: PINYIN_FORBIDDEN_MAP[pinyin], type: 'pinyin' };
+    }
+  }
+
+  return { pass: true };
+}
+
 // 文档归属的 openid（新文档有 _openid，旧文档只有 openid 字段）
 function ownerOf(doc) {
   return (doc && (doc._openid || doc.openid)) || '';
@@ -159,6 +264,21 @@ exports.main = async (event) => {
     }
     if (data.resume.length > 300) {
       return { ok: false, code: 'RESUME_TOO_LONG', message: '简历最多 300 个字' };
+    }
+
+    // 【违禁词】昵称 + 简历 + 联系方式 拼成全文再做净化匹配（便宜的纯内存判断，放在所有 DB 查询之前）。
+    // 为什么必须拼一起：把「代」写在昵称、「课」写在简历里，分字段查永远命中不了。
+    // 这块是绝对防线：前端已拦过一道，但改包就能绕，服务端不认客户端是否做过校验。
+    const localText = [data.nickname, data.resume, data.contact].join(' ');
+    const violation = checkTextViolation(localText);
+    if (!violation.pass) {
+      console.warn('[user] 资料命中违禁词 word=' + violation.word + ' type=' + violation.type + ' openid=' + openid);
+      return {
+        ok: false,
+        code: 'CONTENT_RISKY',
+        message: '昵称、简历或联系方式包含违规词汇，请修改',
+        hitWord: violation.word
+      };
     }
 
     const payload = Object.assign({}, data, { updateTime: Date.now() });

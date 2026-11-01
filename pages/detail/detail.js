@@ -9,6 +9,17 @@ const CATEGORY_MAP = constants.CATEGORY_MAP;
 const POST_STATUS_MAP = constants.POST_STATUS_MAP;
 const REPORT_CATEGORIES = constants.REPORT_CATEGORIES;
 const AUDITING_BLOCK_MESSAGE = constants.AUDITING_BLOCK_MESSAGE;
+const RESUME_PREVIEW_CHARS = constants.AUTHOR_RESUME_PREVIEW_CHARS;
+
+// 时间戳 -> YYYY-MM-DD（详情页评价只展示日期，够用也不占宽度）
+function formatReviewTime(timestamp) {
+  const value = Number(timestamp) || 0;
+  if (!value) return '';
+  const date = new Date(value);
+  const month = date.getMonth() + 1;
+  const day = date.getDate();
+  return date.getFullYear() + '-' + (month < 10 ? '0' + month : month) + '-' + (day < 10 ? '0' + day : day);
+}
 
 // 退回大厅（detail 可能是分享直达打开，栈里没上一页，统一 switchTab 回大厅）
 function backToHall(delay) {
@@ -29,7 +40,16 @@ Page({
     isEnded: false,
     appliedStatus: '',
     appliedText: '',
-    notFound: false
+    notFound: false,
+
+    // ---- 发布者名片（申请人建立信任用：简历 / 满意度 / 最近 3 条匿名评价）----
+    // 初值直接用 store 的兜底结构：名片还没回来时 wxml 也不会取到 undefined
+    authorCard: store.emptyAuthorCard(),
+    resumeExpanded: false,   // 简历是否已展开
+    resumeLong: false,       // 简历是否超过 3 行预览长度（超过才显示「展开全文」）
+    reviewSubText: '',       // 满意度下面那行小字（条数 / 统计中）
+    resumeEmptyText: constants.AUTHOR_RESUME_EMPTY_TEXT,
+    reviewEmptyText: constants.AUTHOR_REVIEW_EMPTY_TEXT
   },
 
   onLoad: async function (options) {
@@ -110,6 +130,81 @@ Page({
       appliedText: appliedText,
       notFound: false
     });
+
+    // 发布者名片单独拉：不 await，避免云函数慢时整页白屏等它
+    // （名片失败了也只是显示空名片，帖子正文/申请按钮不受影响）
+    this.loadAuthorCard(post);
+  },
+
+  /**
+   * 发布者名片：一次云函数同时拿 users 简历 + reviews 匿名统计
+   * @param {object} post 当前帖子（用它的 id 让云端自己查 authorOpenid，不信客户端传的身份）
+   */
+  loadAuthorCard: async function (post) {
+    if (!post) return;
+
+    let card = store.emptyAuthorCard();
+
+    // 本地草稿不是云端文档（没有 _id / authorOpenid），直接渲染兜底名片，
+    // 省一次必然返回 AUTHOR_REQUIRED 的云调用
+    if (post.status === 'draft' || !post.authorOpenid) {
+      this.renderAuthorCard(card, post);
+      return;
+    }
+
+    try {
+      card = await store.fetchAuthorProfile({
+        postId: post.id,
+        authorOpenid: post.authorOpenid
+      });
+    } catch (err) {
+      // store 已经兜底返回空名片，这里只是双保险
+      console.warn('[detail] 发布者名片加载失败，已降级为空名片：', err);
+    }
+
+    this.renderAuthorCard(card, post);
+  },
+
+  renderAuthorCard: function (card, post) {
+    const source = card || store.emptyAuthorCard();
+    // 昵称兜底：名片里没有就用帖子上记的 authorName（旧帖 / 名片接口未部署时仍能显示名字）
+    const nickname = (source.nickname || '').trim() || ((post && post.authorName) || '');
+    const resume = source.resume || '';
+    const reviews = (source.reviews || []).map(function (item) {
+      return Object.assign({}, item, { createTimeText: formatReviewTime(item.createTime) });
+    });
+
+    this.setData({
+      authorCard: Object.assign({}, source, {
+        nickname: nickname,
+        avatarText: source.avatarText || (nickname ? nickname.slice(0, 1) : '?'),
+        resume: resume,
+        hasResume: resume.trim() !== '',
+        reviews: reviews
+      }),
+      reviewSubText: this.buildReviewSubText(source),
+      // 3 行大约 60 个字，超过这个长度才给「展开全文」，避免短简历也挂个没用的按钮
+      resumeLong: resume.length > RESUME_PREVIEW_CHARS,
+      resumeExpanded: false
+    });
+  },
+
+  // 满意度下面那行小字：满 3 条给明细，不足 3 条只说「已收到几条」
+  buildReviewSubText: function (card) {
+    const total = card.reviewTotal || 0;
+    if (card.showRate) {
+      return '共 ' + total + ' 条评价 · 满意 ' + (card.reviewGoodCount || 0) + ' 条';
+    }
+    if (total > 0) {
+      return '已收到 ' + total + ' 条评价，满 ' + constants.REVIEW_MIN_COUNT + ' 条展示满意度';
+    }
+    return '还没有收到评价';
+  },
+
+  // 简历展开 / 收起（只切换样式，不重新请求）
+  onToggleResume: function () {
+    if (!this.data.resumeLong) return;
+    this.setData({ resumeExpanded: !this.data.resumeExpanded });
   },
 
   // 底部主按钮统一入口

@@ -12,6 +12,15 @@ const constants = require("../../utils/constants");
 
 const STUDENT_ID_REGEX = constants.STUDENT_ID_REGEX;
 
+/**
+ * 资料违禁词校验的待检全文：昵称 + 简历 + 联系方式 用空格拼接
+ * 为什么必须拼接：把「代」写在昵称、「课」写在简历里，逐字段查永远碰不上；
+ * 简历会在详情页「发布者名片」公开展示，是黑产发广告的高发区。
+ */
+function buildProfileFullText(nickname, resume, contact) {
+  return [nickname, resume, contact].join(' ');
+}
+
 // 时间戳 -> YYYY-MM-DD（个人页只展示日期，够用也不占宽度）
 function formatReviewTime(timestamp) {
   const value = Number(timestamp) || 0;
@@ -217,6 +226,21 @@ Page({
       return;
     }
 
+    // 【第一道：前端轻量拦截】昵称 + 简历 + 联系方式 拼成全文做净化匹配
+    // 命中直接 return，不发请求（省一次云函数调用，也给用户最快反馈）
+    // 净化 = 小写 + 删空白 + 删全部标点 + 全角转半角 + 拼音兜底，拆字/插标点/换拼音都躲不过
+    const violation = constants.checkTextViolation(
+      buildProfileFullText(nickname, this.data.resume || '', this.data.contact || '')
+    );
+    if (!violation.pass) {
+      wx.showToast({
+        title: '包含违规词汇【' + violation.word + '】，请修改后重试',
+        icon: 'none',
+        duration: 2500
+      });
+      return;
+    }
+
     // 学号：必填 + 广工 10 位格式（云函数里还有同样一道，防绕过）
     const studentId = (this.data.studentId || '').trim();
     if (!studentId) {
@@ -265,6 +289,16 @@ Page({
         });
       } else if (code === 'STUDENT_ID_INVALID') {
         wx.showToast({ title: '学号格式不正确，请检查后重试', icon: 'none' });
+      } else if (code === 'CONTENT_RISKY') {
+        // 【第二道：云端拦截】本地校验被绕过（改包 / 旧版本客户端）时走到这里，
+        // 直接展示云端下发的具体文案（昵称、简历或联系方式包含违规词汇，请修改）
+        wx.showToast({
+          title: (err && err.hitWord)
+            ? '包含违规词汇【' + err.hitWord + '】，请修改后重试'
+            : ((err && err.message) || '昵称、简历或联系方式包含违规词汇，请修改'),
+          icon: 'none',
+          duration: 2500
+        });
       } else {
         wx.showToast({
           title: (err && err.message) || '保存失败，请稍后重试',

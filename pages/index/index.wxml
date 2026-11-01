@@ -18,7 +18,8 @@
             wx:for="{{postList}}"
             wx:key="id"
             bindtap="goToDetail"
-            data-id="{{item.id}}">
+            data-id="{{item.id}}"
+            data-status="{{item.status}}">
 
         <!-- 标题行：分类标签 + 标题 + 状态标识（右上角） -->
         <view class="post-header">
@@ -27,8 +28,8 @@
           <view wx:if="{{item.statusText}}" class="status-badge status-{{item.statusKey}}">{{item.statusText}}</view>
         </view>
 
-        <!-- 描述文字（超过两行省略） -->
-        <view class="post-desc">{{item.content}}</view>
+        <!-- 描述文字：审核中显示掩码，正常显示正文（超过两行省略） -->
+        <view class="post-desc {{item.isAuditing ? 'post-desc-mask' : ''}}">{{item.contentText}}</view>
 
         <!-- 技能标签行 -->
         <view class="post-tags" wx:if="{{item.tags.length > 0}}">

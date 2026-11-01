@@ -1,38 +1,15 @@
 // pages/detail/detail.js
-// 详情页：从 mockData + 本地缓存读取完整内容，并处理「申请加入」
+// 详情页：读取帖子完整内容，处理「申请加入」与「举报」
 
-const mockData = require("../../utils/mockData");
+const store = require("../../utils/store");
+const constants = require("../../utils/constants");
 
-// 写死的当前登录用户（演示用，与发布页 / 任务页保持一致）
-const CURRENT_USER = {
-  name: '林同学',
-  openid: 'openid_mock_lin'
-};
-
-// 分类字典
-const categoryMap = {
-  'team': '组队',
-  'resume': '自荐',
-  'partner': '搭子'
-};
-
-// 状态字典
-const statusMap = {
-  'draft': '草稿',
-  'auditing': '审核中',
-  'active': '寻呼中',
-  'ended': '已结束'
-};
-
-// 发帖人姓名 -> openid（mockData 里的约定，用于生成申请的 receiverId）
-const AUTHOR_OPENID_MAP = {
-  '张同学': 'openid_mock_zhang',
-  '李同学': 'openid_mock_li',
-  '王同学': 'openid_mock_wang',
-  '陈同学': 'openid_mock_chen',
-  '林同学': 'openid_mock_lin',
-  '黄同学': 'openid_mock_huang'
-};
+const CURRENT_USER = constants.CURRENT_USER;
+const CATEGORY_MAP = constants.CATEGORY_MAP;
+const POST_STATUS_MAP = constants.POST_STATUS_MAP;
+const AUTHOR_OPENID_MAP = constants.AUTHOR_OPENID_MAP;
+const REPORT_CATEGORIES = constants.REPORT_CATEGORIES;
+const STORAGE_KEYS = constants.STORAGE_KEYS;
 
 Page({
   data: {
@@ -51,27 +28,31 @@ Page({
 
   onLoad: function (options) {
     const id = (options && options.id) || '';
-    const post = this.findPost(id);
+    const post = store.findPost(id);
 
     if (!post) {
       this.setData({ notFound: true });
       return;
     }
 
-    // 热度：合并本地已持久化的热度值
-    const baseHeat = this.resolveHeat(post);
+    // 发帖人视角：作者是我
+    const isOwner = post.authorName === CURRENT_USER.name;
+
+    // 状态限制：审核中的帖子只有发帖人本人能看（大厅已在入口拦截，这里再兜一层）
+    if (post.status === 'auditing' && !isOwner) {
+      wx.showToast({ title: '该信息还在审核中，暂不可查看', icon: 'none' });
+      setTimeout(function () {
+        wx.navigateBack();
+      }, 1200);
+      return;
+    }
 
     // PRD：进入详情页 heat +1（浏览记一次热度）
-    const heat = baseHeat + 1;
-    this.persistHeat(post.id, heat);
-
-    // 发帖人视角：作者是我
-    const isOwner = post.authorName === CURRENT_USER.name
-      || (post.authorOpenid && post.authorOpenid === CURRENT_USER.openid);
+    const heat = store.resolveHeat(post) + 1;
+    store.persistHeat(post.id, heat);
 
     // 是否已申请过（禁止重复申请）
-    const apps = this.getApplications();
-    const myApplication = apps.find(function (app) {
+    const myApplication = store.getApplications().find(function (app) {
       return app.postId === post.id && app.applicantId === CURRENT_USER.openid;
     }) || null;
     const hasApplied = !!(myApplication && myApplication.status !== 'rejected');
@@ -80,20 +61,18 @@ Page({
       ? '已通过，去任务页看联系方式'
       : '已申请，等待审核';
 
-    const rawCategory = post.category || post.PostCategory || '';
+    const category = post.category;
 
     this.setData({
       post: Object.assign({}, post, {
         heat: heat,
-        tags: post.tags || [],
-        content: post.content || post.desc || '',
-        authorName: post.authorName || post.author || '匿名同学'
+        tags: post.tags || []
       }),
-      category: rawCategory,
-      categoryKey: categoryMap[rawCategory] ? rawCategory : 'other',
-      categoryText: categoryMap[rawCategory] || '其他',
-      statusText: statusMap[post.status] || '',
-      statusKey: statusMap[post.status] ? post.status : '',
+      category: category,
+      categoryKey: CATEGORY_MAP[category] ? category : 'other',
+      categoryText: CATEGORY_MAP[category] || '其他',
+      statusText: POST_STATUS_MAP[post.status],
+      statusKey: post.status,
       isOwner: isOwner,
       hasApplied: hasApplied,
       appliedStatus: appliedStatus,
@@ -102,56 +81,7 @@ Page({
     });
   },
 
-  // 大厅 -> 详情：先找本地缓存（自己发的帖），再找 mockData
-  findPost: function (id) {
-    if (!id) return null;
-    const localPosts = wx.getStorageSync('local_posts') || [];
-    const cloudPosts = mockData.postList || [];
-    const allPosts = localPosts.concat(cloudPosts);
-    return allPosts.find(function (item) {
-      return item && item.id === id;
-    }) || null;
-  },
-
-  // 读取申请数据：优先本地，没有则用 mock 兜底
-  getApplications: function () {
-    const localApps = wx.getStorageSync('local_applications');
-    if (localApps && localApps.length > 0) return localApps;
-    return mockData.mockApplications || [];
-  },
-
-  // 本地热度覆盖表：让 +1 / +5 的热度能跨页面、跨重启保持一致
-  resolveHeat: function (post) {
-    const overrides = wx.getStorageSync('local_heat_overrides') || {};
-    const baseHeat = typeof post.heat === 'number' ? post.heat : 0;
-    const savedHeat = overrides[post.id];
-    return (typeof savedHeat === 'number' && savedHeat > baseHeat) ? savedHeat : baseHeat;
-  },
-
-  persistHeat: function (postId, heat) {
-    const overrides = wx.getStorageSync('local_heat_overrides') || {};
-    overrides[postId] = heat;
-    wx.setStorageSync('local_heat_overrides', overrides);
-
-    // 自己发的帖：同步草稿箱里的热度
-    let localPosts = wx.getStorageSync('local_posts') || [];
-    let changed = false;
-    localPosts = localPosts.map(function (item) {
-      if (item && item.id === postId) {
-        changed = true;
-        return Object.assign({}, item, { heat: heat });
-      }
-      return item;
-    });
-    if (changed) wx.setStorageSync('local_posts', localPosts);
-
-    // 同步内存中的 mockData，保证返回大厅时热度一致
-    (mockData.postList || []).forEach(function (item) {
-      if (item.id === postId) item.heat = heat;
-    });
-  },
-
-  // 底部按钮统一入口
+  // 底部主按钮统一入口
   onActionClick: function () {
     if (this.data.isOwner) {
       // 发帖人：去任务页管理申请（task 是 TabBar 页，必须用 switchTab）
@@ -180,8 +110,6 @@ Page({
     const post = this.data.post;
     if (!post) return;
 
-    const apps = this.getApplications();
-
     // 1. 写入一条 pending 申请
     const newApplication = {
       id: 'app_' + Date.now(),
@@ -192,12 +120,11 @@ Page({
       status: 'pending',
       createTime: Date.now()
     };
-
-    wx.setStorageSync('local_applications', apps.concat(newApplication));
+    store.addApplication(newApplication);
 
     // 2. 热度 +5
     const heat = (post.heat || 0) + 5;
-    this.persistHeat(post.id, heat);
+    store.persistHeat(post.id, heat);
 
     this.setData({
       hasApplied: true,
@@ -207,5 +134,48 @@ Page({
     });
 
     wx.showToast({ title: '申请已发送，请等待审核', icon: 'none' });
+  },
+
+  /**
+   * 举报：ActionSheet 选分类 -> Modal 填描述 -> 存本地
+   * 纯前端模拟，不接真实审核后台
+   */
+  onReportClick: function () {
+    const that = this;
+    wx.showActionSheet({
+      itemList: REPORT_CATEGORIES,
+      success: function (res) {
+        that.openReportModal(REPORT_CATEGORIES[res.tapIndex]);
+      }
+    });
+  },
+
+  openReportModal: function (category) {
+    const that = this;
+    wx.showModal({
+      title: '举报：' + category,
+      editable: true,
+      placeholderText: '请补充具体描述，方便我们核实处理',
+      confirmText: '提交',
+      success: function (res) {
+        if (!res.confirm) return;
+        that.saveReport(category, res.content || '');
+        wx.showToast({ title: '举报成功，感谢反馈', icon: 'none' });
+      }
+    });
+  },
+
+  saveReport: function (category, description) {
+    const post = this.data.post;
+    const reports = wx.getStorageSync(STORAGE_KEYS.REPORTS) || [];
+    reports.unshift({
+      id: 'report_' + Date.now(),
+      postId: post ? post.id : '',
+      reporterId: CURRENT_USER.openid,
+      category: category,
+      description: (description || '').trim(),
+      createTime: Date.now()
+    });
+    wx.setStorageSync(STORAGE_KEYS.REPORTS, reports);
   }
 });

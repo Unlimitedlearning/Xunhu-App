@@ -1,16 +1,63 @@
 <!--pages/profile/profile.wxml-->
-<view class="container">
-  <view class="card">
-    <image class="avatar" src="https://mmbiz.qpic.cn/mmbiz/icTdbqWNOwNRna42FI242Lcia07jQodd2FJGIYQfG0LAJGFxM4FbnQP6yfMxBgJ0F3YRqJCJ1aPAK2dQagdusBZg/0"></image>
-    <view class="info">
-      <view class="name">待认证用户</view>
-      <view class="student-id">学号：等待绑定</view>
+<view class="page">
+
+  <!-- 未登录：只显示登录入口 -->
+  <view class="login-card" wx:if="{{!isLogin}}">
+    <view class="avatar avatar-guest">?</view>
+    <view class="login-text">登录后可维护简历、查看收到的评价</view>
+    <button class="login-btn" bindtap="handleLogin">点击登录</button>
+  </view>
+
+  <!-- 已登录 -->
+  <block wx:else>
+
+    <!-- 个人信息 -->
+    <view class="card">
+      <view class="profile-header">
+        <view class="avatar">{{avatarText}}</view>
+        <view class="profile-info">
+          <view class="name">{{userName}}</view>
+          <view class="student-id">学号：{{studentId}}</view>
+        </view>
+      </view>
     </view>
-  </view>
-  
-  <view class="menu">
-    <view class="menu-item">我发布的需求</view>
-    <view class="menu-item">我参与的项目</view>
-    <view class="menu-item">我的技能标签</view>
-  </view>
+
+    <!-- 简历 / 联系方式（可编辑） -->
+    <view class="card">
+      <view class="section-title">简历 / 技能描述</view>
+      <textarea class="resume-input"
+                placeholder="介绍一下你的技能、项目经历，让同学更快认识你"
+                maxlength="300"
+                value="{{resume}}"
+                bindinput="onResumeInput"></textarea>
+
+      <view class="section-title section-title-gap">联系方式</view>
+      <input class="contact-input"
+             placeholder="微信号 / QQ / 手机号"
+             maxlength="40"
+             value="{{contact}}"
+             bindinput="onContactInput" />
+
+      <text class="tip">联系方式仅在你同意申请后展示给申请人</text>
+
+      <button class="save-btn" bindtap="saveProfile">保存资料</button>
+    </view>
+
+    <!-- 收到的评价 -->
+    <view class="card">
+      <view class="section-title">收到的评价</view>
+      <view class="review-item" wx:for="{{reviews}}" wx:key="id">
+        <view class="review-head">
+          <text class="review-from">{{item.fromName}}</text>
+          <text class="review-time">{{item.createTime}}</text>
+        </view>
+        <view class="review-content">{{item.content}}</view>
+      </view>
+      <view class="empty-review" wx:if="{{reviews.length === 0}}">还没有收到评价</view>
+    </view>
+
+    <view class="logout-btn" bindtap="handleLogout">退出登录</view>
+
+  </block>
+
 </view>

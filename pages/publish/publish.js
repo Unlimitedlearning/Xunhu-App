@@ -1,22 +1,18 @@
 // pages/publish/publish.js
 // 发布页：校验 + 模拟上传 + 落地本地缓存，不连真实云端
-// 状态流转：组件默认 status: 'auditing'，上传成功保持 auditing，上传失败强改 status: 'draft'
+// 状态流转：组装时默认 status: 'auditing'，上传成功保持 auditing，上传失败强改 status: 'draft'
 
-// 写死的当前登录用户（演示用，接入云开发后替换为真实 openid）
-// 选「林同学」是因为 mockApplications 里他既有一条已同意的申请（能看到联系方式），
-// 又收到一条待处理申请（能演示同意/拒绝），两个 Tab 都有真实数据可看。
-const CURRENT_USER = {
-  name: '林同学',
-  openid: 'openid_mock_lin'
-};
+const store = require("../../utils/store");
+const constants = require("../../utils/constants");
 
-// PRD「六、安全拦截」违禁词
-const FORBIDDEN_WORDS = ['代课', '代考', '代写', '刷单'];
+const CURRENT_USER = constants.CURRENT_USER;
+const CATEGORY_LIST = constants.CATEGORY_LIST;
+const FORBIDDEN_WORDS = constants.FORBIDDEN_WORDS;
 
 Page({
   data: {
-    categories: ['组队', '自荐', '搭子'],
-    categoryKeys: ['team', 'resume', 'partner'], // 对应数据模型里的 category 枚举
+    categories: CATEGORY_LIST.map(function (item) { return item.text; }),
+    categoryKeys: CATEGORY_LIST.map(function (item) { return item.key; }),
     categoryIndex: 0,
     title: '',
     content: '',
@@ -26,18 +22,18 @@ Page({
 
   onLoad: function () {
     // 离线优先：找回上次上传失败的草稿（status === 'draft'）
-    const localPosts = wx.getStorageSync('local_posts') || [];
-    const draft = localPosts.find(item => item && item.status === 'draft');
+    const draft = store.getLocalPosts().find(function (item) {
+      return item && item.status === 'draft';
+    });
 
     if (!draft) return;
 
-    const category = draft.category || draft.PostCategory || 'team';
-    const index = this.data.categoryKeys.indexOf(category);
+    const index = this.data.categoryKeys.indexOf(draft.category);
 
     this.setData({
       categoryIndex: index > -1 ? index : 0,
       title: draft.title || '',
-      content: draft.content || draft.desc || '',
+      content: draft.content || '',
       tagStr: (draft.tags || []).join(' '),
       contact: draft.contact || ''
     });
@@ -118,14 +114,11 @@ Page({
       });
 
       // 本地缓存只保留一份草稿，避免大厅出现多条重复草稿
-      let localPosts = wx.getStorageSync('local_posts') || [];
-      localPosts = localPosts.filter(function (item) {
+      const keptPosts = store.getLocalPosts().filter(function (item) {
         return item && item.status !== 'draft';
       });
-      localPosts.unshift(savedPost);
-      wx.setStorageSync('local_posts', localPosts);
-
-      console.log('发布结果：' + (isSuccess ? '成功' : '失败') + '，数据为：', savedPost);
+      store.saveLocalPosts(keptPosts);
+      store.savePost(savedPost);
 
       if (isSuccess) {
         wx.showToast({ title: '发布成功', icon: 'success' });

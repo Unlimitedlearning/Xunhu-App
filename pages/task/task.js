@@ -1,20 +1,11 @@
 // pages/task/task.js
 // 任务页：申请流转工作台（纯本地数据闭环）
 
-const mockData = require("../../utils/mockData");
+const store = require("../../utils/store");
+const constants = require("../../utils/constants");
 
-// 写死的当前登录用户（演示用，与发布页 / 详情页保持一致）
-const CURRENT_USER = {
-  name: '林同学',
-  openid: 'openid_mock_lin'
-};
-
-// 申请状态字典
-const statusMap = {
-  'pending': '待处理',
-  'accepted': '已同意',
-  'rejected': '已拒绝'
-};
+const CURRENT_USER = constants.CURRENT_USER;
+const APPLICATION_STATUS_MAP = constants.APPLICATION_STATUS_MAP;
 
 Page({
   data: {
@@ -35,23 +26,9 @@ Page({
     });
   },
 
-  // 申请数据：优先本地，没有则用 mock 兜底
-  getApplications: function () {
-    const localApps = wx.getStorageSync('local_applications');
-    if (localApps && localApps.length > 0) return localApps;
-    return mockData.mockApplications || [];
-  },
-
-  // 帖子数据：本地草稿箱 + mockData
-  getAllPosts: function () {
-    const localPosts = wx.getStorageSync('local_posts') || [];
-    const cloudPosts = mockData.postList || [];
-    return localPosts.concat(cloudPosts);
-  },
-
   refreshList: function () {
-    const apps = this.getApplications();
-    const posts = this.getAllPosts();
+    const apps = store.getApplications();
+    const posts = store.getPosts();
 
     // Tab 1：我发出的申请（applicantId === 我）
     const sentList = apps
@@ -69,8 +46,6 @@ Page({
       .map(app => this.formatApplication(app, posts, 'received'))
       .sort((a, b) => b.createTime - a.createTime);
 
-    console.log('我发出的申请：', sentList, '我收到的申请：', receivedList);
-
     this.setData({
       sentList: sentList,
       receivedList: receivedList
@@ -86,18 +61,18 @@ Page({
       return item && item.id === app.postId;
     }) || null;
 
-    const status = app.status || 'pending';
+    const status = app.status;
 
     return {
       id: app.id,
       postId: app.postId,
       postTitle: post ? post.title : '该寻呼已被删除',
-      authorName: post ? (post.authorName || post.author || '匿名同学') : '未知',
-      applicantName: app.applicantName || '匿名同学',
+      authorName: post ? post.authorName : '未知',
+      applicantName: app.applicantName,
       status: status,
-      statusText: statusMap[status] || '未知状态',
+      statusText: APPLICATION_STATUS_MAP[status] || '未知状态',
       isPending: status === 'pending',
-      contact: (type === 'sent' && status === 'accepted' && post) ? (post.contact || '') : '',
+      contact: (type === 'sent' && status === 'accepted' && post) ? post.contact : '',
       createTime: app.createTime || 0
     };
   },
@@ -108,15 +83,7 @@ Page({
     const action = e.currentTarget.dataset.action; // accepted / rejected
     if (!id || (action !== 'accepted' && action !== 'rejected')) return;
 
-    const apps = this.getApplications();
-    const nextApps = apps.map(function (app) {
-      if (app.id === id) {
-        return Object.assign({}, app, { status: action });
-      }
-      return app;
-    });
-
-    wx.setStorageSync('local_applications', nextApps);
+    store.updateApplicationStatus(id, action);
     this.refreshList();
 
     wx.showToast({

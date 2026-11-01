@@ -40,6 +40,12 @@ page {
   overflow: hidden;
 }
 
+/* 审核中的掩码文案：降低存在感，不吸引点开 */
+.post-desc-mask {
+  color: #c8c9cc;
+  letter-spacing: 4rpx;
+}
+
 /* 标签组 */
 .post-tags {
   display: flex;

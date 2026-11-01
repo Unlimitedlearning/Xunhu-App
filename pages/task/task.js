@@ -15,7 +15,9 @@ const constants = require("../../utils/constants");
 //         且每张「没出现评价按钮」的卡片下面会直接写出是哪一条判定没过。
 // false = 全部隐藏，界面回到干净状态（不影响任何判定与数据）。
 // 为什么加它：canReview 是 4 个条件串联，之前任何一个 false 都只能靠猜。
-const DEV_DEBUG = true;
+// 【内测状态】已置 false：黄色调试条 + 卡片下的「⚠ 无评价按钮」红字都不会渲染给测试同学
+//             也不会打任何 [task][DEV] 日志。需要排障时临时改回 true 再编译即可。
+const DEV_DEBUG = false;
 
 const APPLICATION_STATUS_MAP = constants.APPLICATION_STATUS_MAP;
 
@@ -301,11 +303,11 @@ Page({
       this.renderList();
       wx.showToast({
         title: action === 'accepted' ? '已同意申请' : '已拒绝申请',
-        icon: 'success'
+        icon: 'none'
       });
     } catch (err) {
       console.error('[task] 更新申请状态失败：', err);
-      wx.showToast({ title: '操作失败，请检查集合权限', icon: 'none' });
+      wx.showToast({ title: '操作失败，请稍后重试', icon: 'none' });
     }
   },
 
@@ -416,7 +418,7 @@ Page({
       });
 
       this.renderList(); // 按钮立刻变成「更新评价」+ 已评价标记
-      wx.showToast({ title: isUpdate ? '评价已更新' : '评价已提交', icon: 'success' });
+      wx.showToast({ title: isUpdate ? '评价已更新' : '评价已提交', icon: 'none' });
     } catch (err) {
       this.setData({ reviewSubmitting: false });
       console.error('[task] 提交评价失败：', err);

@@ -20,7 +20,6 @@ function backToHall(delay) {
 Page({
   data: {
     post: null,
-    category: '',
     categoryKey: '',
     categoryText: '',
     statusText: '',
@@ -100,7 +99,6 @@ Page({
         heat: heat,
         tags: post.tags || []
       }),
-      category: category,
       categoryKey: CATEGORY_MAP[category] ? category : 'other',
       categoryText: CATEGORY_MAP[category] || '其他',
       statusText: POST_STATUS_MAP[post.status],

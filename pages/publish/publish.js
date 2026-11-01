@@ -195,7 +195,7 @@ Page({
     store.savePost(postData).then(function () {
       wx.hideLoading();
       store.removeDraft(); // 发布成功后清掉旧草稿
-      wx.showToast({ title: '发布成功，已上线', icon: 'success' });
+      wx.showToast({ title: '发布成功，已上线', icon: 'none' });
       that.resetForm();
       that.backToHall(1200);
     }).catch(function (err) {

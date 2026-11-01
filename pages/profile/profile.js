@@ -39,7 +39,6 @@ Page({
     reviewRate: 0,                         // 好评率百分比，由云端算好
     showReviewRate: false,                 // 总数 >= 3 才展示好评率，否则只显示「满意度统计中...」
     reviewPendingText: constants.REVIEW_PENDING_TEXT,
-    reviewMinCount: constants.REVIEW_MIN_COUNT,
     reviewEmptyText: '还没有收到评价',
     reviews: []                            // [{ id, fromName: '某同学', content, ratingText, isGood, createTime }]
   },
@@ -156,7 +155,7 @@ Page({
     } catch (err) {
       wx.hideLoading();
       console.error('[profile] 登录失败：', err);
-      wx.showToast({ title: '登录失败，请检查云环境', icon: 'none' });
+      wx.showToast({ title: '登录失败，请稍后重试', icon: 'none' });
     }
   },
 
@@ -241,7 +240,7 @@ Page({
       await this.refreshProfile();
 
       // 保存成功：第一句确认写入，第二句告诉用户「权限已经解锁」
-      wx.showToast({ title: '保存成功', icon: 'success', duration: 900 });
+      wx.showToast({ title: '保存成功', icon: 'none', duration: 900 });
       setTimeout(function () {
         wx.showToast({
           title: store.isProfileReady()
@@ -265,10 +264,10 @@ Page({
           confirmText: '我知道了'
         });
       } else if (code === 'STUDENT_ID_INVALID') {
-        wx.showToast({ title: '学号格式不合法，拒绝保存', icon: 'none' });
+        wx.showToast({ title: '学号格式不正确，请检查后重试', icon: 'none' });
       } else {
         wx.showToast({
-          title: (err && err.message) || '保存失败，请确认 user 云函数已部署',
+          title: (err && err.message) || '保存失败，请稍后重试',
           icon: 'none'
         });
       }
@@ -299,7 +298,7 @@ Page({
       fail: function (err) {
         console.error('[agreement] navigateTo fail:', err);
         wx.showToast({
-          title: '页面跳转失败，请重新编译后再试',
+          title: '页面打开失败，请稍后重试',
           icon: 'none'
         });
       }

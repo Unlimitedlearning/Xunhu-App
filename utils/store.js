@@ -26,9 +26,11 @@ const PAGE_SIZE = 20;    // 小程序端单次 get 上限就是 20 条
 const MAX_FETCH = 100;   // 单次同步最多拉 100 条，再多要走业务分页
 const DRAFT_ID = 'local_draft';
 
-// 首次运行且 posts 集合为空时，把 mockData 灌进云端，保证演示时大厅不是空的
-// 不需要就改成 false（只影响第一次，集合里有数据后不会再写）
-const SEED_DEMO_POSTS = true;
+// 首次运行且 posts 集合为空时，把 mockData 灌进云端，保证演示时大厅不是空的。
+// 【内测状态】已置 false：内测看到的大厅必须全是真实数据，
+//   否则「张同学 / 李同学 / 林同学」这些假帖子会被灌进云端（且 authorOpenid 是假的，
+//   既结束不了也评价不了，非常难清理）。需要演示数据时再临时改回 true。
+const SEED_DEMO_POSTS = false;
 
 // 内存缓存：页面同步读取的数据源
 const cache = {
@@ -193,7 +195,6 @@ async function pullApplications() {
 async function seedDemoData() {
   const posts = (mockData && mockData.postList) || [];
   if (!posts.length) return;
-  console.log('[store] posts 集合为空，写入 ' + posts.length + ' 条演示数据（关闭 SEED_DEMO_POSTS 可跳过）');
 
   for (let i = 0; i < posts.length; i++) {
     const item = posts[i];

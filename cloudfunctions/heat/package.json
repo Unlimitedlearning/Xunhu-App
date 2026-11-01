@@ -1,0 +1,9 @@
+{
+  "name": "heat",
+  "version": "1.0.0",
+  "description": "帖子热度原子自增",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}

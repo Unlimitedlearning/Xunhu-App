@@ -11,6 +11,14 @@
 
   <block wx:else>
 
+  <!-- DEV_DEBUG：排障条。DEV_DEBUG = false 时自动消失，不影响正式界面 -->
+  <view class="dev-banner" wx:if="{{devDebug}}">
+    <text class="dev-line" selectable="true">openid：{{devInfo.openid}}</text>
+    <text class="dev-line">帖子缓存 {{devInfo.postCount}} 条 · 申请缓存 {{devInfo.appCount}} 条</text>
+    <text class="dev-line" wx:if="{{devInfo.postIds}}">帖子 id：{{devInfo.postIds}}</text>
+    <text class="dev-line dev-err" wx:if="{{devInfo.appError}}">申请拉取失败：{{devInfo.appError}}</text>
+  </view>
+
   <!-- 顶部 Tab -->
   <view class="tab-bar">
     <view class="tab-item {{activeTab === index ? 'tab-active' : ''}}"
@@ -52,6 +60,9 @@
                 data-postid="{{item.postId}}"
                 catchtap="onReviewTap">{{item.reviewBtnText}}</button>
       </view>
+
+      <!-- DEV_DEBUG：按钮为何没出现（DEV_DEBUG = false 时不渲染） -->
+      <view class="review-hint" wx:if="{{devDebug && item.reviewHint}}">⚠ 无评价按钮：{{item.reviewHint}}</view>
 
       <view class="card-footer">
         <text class="tip-text" wx:if="{{item.status === 'pending'}}">发起人还在考虑，耐心等等～</text>
@@ -114,6 +125,9 @@
                 data-postid="{{item.postId}}"
                 catchtap="onReviewTap">{{item.reviewBtnText}}</button>
       </view>
+
+      <!-- DEV_DEBUG：按钮为何没出现（DEV_DEBUG = false 时不渲染） -->
+      <view class="review-hint" wx:if="{{devDebug && item.reviewHint}}">⚠ 无评价按钮：{{item.reviewHint}}</view>
 
       <view class="card-footer" wx:if="{{!item.isPending}}">
         <text class="tip-text" wx:if="{{item.status === 'rejected'}}">你已拒绝该申请</text>

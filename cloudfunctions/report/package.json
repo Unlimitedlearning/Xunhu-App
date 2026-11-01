@@ -1,0 +1,9 @@
+{
+  "name": "report",
+  "version": "1.0.0",
+  "description": "举报落库 + 帖子打码审查",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}

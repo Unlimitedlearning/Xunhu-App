@@ -1,0 +1,9 @@
+{
+  "name": "publish",
+  "version": "1.0.0",
+  "description": "发布帖子：微信内容安全机审 + 直接上线",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}

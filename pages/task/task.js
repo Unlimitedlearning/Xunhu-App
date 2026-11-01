@@ -10,6 +10,13 @@ const store = require("../../utils/store");
 const guard = require("../../utils/guard");
 const constants = require("../../utils/constants");
 
+// ==================== DEV_DEBUG 排障开关 ====================
+// true  = 任务页顶部显示一行调试信息（openid / 帖子数 / 申请数 / 拉取错误），
+//         且每张「没出现评价按钮」的卡片下面会直接写出是哪一条判定没过。
+// false = 全部隐藏，界面回到干净状态（不影响任何判定与数据）。
+// 为什么加它：canReview 是 4 个条件串联，之前任何一个 false 都只能靠猜。
+const DEV_DEBUG = true;
+
 const APPLICATION_STATUS_MAP = constants.APPLICATION_STATUS_MAP;
 
 Page({
@@ -21,6 +28,8 @@ Page({
     ready: false,      // 已登录 + 资料完善：满足才渲染申请列表
     guardTitle: '',
     guardTip: '',
+    devDebug: DEV_DEBUG,      // DEV_DEBUG：顶部调试条 + 卡片下的「为什么没按钮」提示
+    devInfo: {},
 
     // ---- 评价弹窗 ----
     reviewMaxLength: constants.REVIEW_CONTENT_MAX, // 与云端 MAX_CONTENT、textarea maxlength 同一值
@@ -79,9 +88,16 @@ Page({
 
   // 云端刷缓存 -> 同步渲染
   refreshList: async function () {
+    // 帖子与申请必须一起重新拉。
+    // 旧逻辑只在「帖子缓存为空」时才拉 posts，于是：在控制台把帖子改成 ended、
+    // 或其他端结束后，任务页一直用启动时的旧 status 判断 postEnded —— 评价按钮永远不出现。
     try {
-      // 帖子缓存为空时补拉一次（任务页要用它显示标题/发帖人，也要判断帖子是否已结束）
-      if (!store.getPosts().length) await store.syncPosts();
+      await store.syncPosts();
+    } catch (err) {
+      console.warn('[task] 帖子列表刷新失败，先用缓存判断：', err);
+    }
+
+    try {
       await store.syncApplications();
     } catch (err) {
       console.error('[task] 云数据拉取失败：', err);
@@ -98,13 +114,66 @@ Page({
       console.warn('[task] 我的评价列表拉取失败，按钮先按「未评价」渲染：', err);
     }
 
+    // 帖子与申请都拉完后，把「申请里出现、但帖子列表缓存里找不到」的 postId 按 _id 再直取一次。
+    // 为什么要有这一步：列表缓存是「分页 + orderBy(createTime)」拉进来的，可能漏掉个别帖子，
+    // 而评价按钮要求 app.postId 能对应到帖子 —— 帖子明明在库里、按钮却永远不出现，就是这个原因。
+    await this.patchMissingPosts();
+
     this.renderList();
+  },
+
+  // 补拉「申请引用了、但列表缓存里没有」的帖子（按 _id 直取，不受分页/排序影响）
+  patchMissingPosts: async function () {
+    const apps = store.getApplications();
+    if (!apps.length) return;
+
+    const openid = store.getOpenId();
+    const ids = [];
+    apps.forEach(function (app) {
+      if (!app || !app.postId) return;
+      // 只看与自己相关的申请，避免为无关数据发无意义的请求
+      if (app.applicantId !== openid && app.receiverId !== openid) return;
+      if (store.findPost(app.postId)) return;   // 缓存里有就不用补
+      if (ids.indexOf(app.postId) < 0) ids.push(app.postId);
+    });
+    if (!ids.length) return;
+
+    if (DEV_DEBUG) console.log('[task][DEV] 缓存缺失，按 _id 补拉帖子：', ids);
+
+    const results = await Promise.all(ids.map(function (id) {
+      return store.fetchPostById(id);
+    }));
+
+    if (DEV_DEBUG) {
+      results.forEach(function (post, index) {
+        if (!post) console.warn('[task][DEV] 帖子按 _id 直取失败（已删除 / postId 写错 / 无读权限）：', ids[index]);
+      });
+    }
   },
 
   renderList: function () {
     const apps = store.getApplications();
     const posts = store.getPosts();
     const openid = store.getOpenId();
+
+    // DEV_DEBUG：把判定依据摆到界面上，不再靠猜
+    let devInfo = {};
+    if (DEV_DEBUG) {
+      const err = store.getApplicationsError();
+      const errText = err
+        ? String(err.errMsg || err.message || err.errCode || '未知错误')
+        : '';
+      devInfo = {
+        openid: openid || '(空)',
+        postCount: posts.length,
+        postIds: posts.slice(0, 5).map(function (p) { return p.id; }).join(' / '),
+        appCount: apps.length,
+        appError: errText
+      };
+      console.log('[task][DEV] openid=' + openid,
+        'posts=' + posts.length, 'apps=' + apps.length,
+        errText ? 'appErr=' + errText : '');
+    }
 
     // Tab 1：我发出的申请（applicantId === 我）
     const sentList = apps
@@ -124,7 +193,8 @@ Page({
 
     this.setData({
       sentList: sentList,
-      receivedList: receivedList
+      receivedList: receivedList,
+      devInfo: devInfo
     });
   },
 
@@ -167,6 +237,35 @@ Page({
     const canReview = isAccepted && postEnded && !!revieweeOpenid && revieweeOpenid !== openid;
     const myReview = canReview ? store.findMyReviewTo(revieweeOpenid) : null;
 
+    // DEV_DEBUG：按钮没出现时，直接算出是哪一条没过（顺序与 canReview 的判定一致）
+    let reviewHint = '';
+    if (DEV_DEBUG && !canReview) {
+      if (!isAccepted) {
+        reviewHint = '申请状态不是 accepted（当前：' + (status || '空') + '）';
+      } else if (!post) {
+        // 最常见的坑：控制台里 _openid 和 _id 长得很像（都是 28 位左右），手抄容易把
+        // 作者的 openid 当成文档 _id 填进 postId。直接在这里点名提示。
+        const hitAuthor = posts.find(function (item) {
+          return item && item.authorOpenid && item.authorOpenid === app.postId;
+        });
+        reviewHint = hitAuthor
+          ? 'app.postId 填的是作者 _openid（' + app.postId + '），不是帖子文档的 _id。应把「' +
+            (hitAuthor.title || '该帖子') + '」这条文档的 _id 字段填进 postId'
+          : '帖子不存在：列表缓存里没有，按 _id 直取也失败（postId=' + (app.postId || '空') +
+            '）。请核对 applications 这条记录的 postId 是否等于帖子 _id，或帖子已被删除';
+      } else if (!postEnded) {
+        reviewHint = '帖子 status 不是 ended（当前：' + (post.status || '空') + '）';
+      } else if (!revieweeOpenid) {
+        reviewHint = type === 'sent'
+          ? '帖子没有 authorOpenid 字段，拿不到被评价人'
+          : '申请没有 applicantId 字段，拿不到被评价人';
+      } else if (revieweeOpenid === openid) {
+        reviewHint = '被评价人就是自己（自评被拦，属正常业务规则）';
+      } else {
+        reviewHint = '未知原因';
+      }
+    }
+
     return {
       id: app.id,
       postId: app.postId,
@@ -183,6 +282,7 @@ Page({
       // 评价相关
       canReview: canReview,
       postEnded: postEnded,
+      reviewHint: reviewHint,
       hasReviewed: !!myReview,
       reviewBtnText: myReview ? '更新评价' : '评价对方',
       revieweeOpenid: revieweeOpenid,

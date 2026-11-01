@@ -14,4 +14,6 @@ AGENTS.md
 HEARTBEAT.md
 SOUL.md
 USER.md
-cloudfunctions/
+# 云函数代码必须入版本库（否则 `git checkout .` / `git status` 看不到它们的改动，
+# 曾经导致「后门代码以为回退了、实际还在」的事故）；只忽略依赖目录
+cloudfunctions/*/node_modules/

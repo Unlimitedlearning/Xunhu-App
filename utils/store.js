@@ -346,6 +346,37 @@ function findPost(postId) {
   }) || null;
 }
 
+/**
+ * 按 _id 直取单条帖子（异步，会顺手补进缓存）。
+ * 为什么需要它：列表缓存是「分页 + orderBy(createTime)」拉进来的，可能漏掉个别帖子
+ * （超过 MAX_FETCH、缺 createTime 字段、翻页边界）；而任务页的评价按钮要求
+ * app.postId 必须能对应到帖子，一旦漏掉就出现「帖子明明存在，按钮却永远不出现」。
+ * doc(id).get() 不受分页与排序影响，能直接定死「帖子到底存不存在」。
+ * @return {object|null} 规范化后的帖子；不存在/无权限返回 null（不抛错，调用方可降级）
+ */
+async function fetchPostById(postId) {
+  if (!postId) return null;
+  const id = String(postId);
+  try {
+    const res = await col(COLLECTIONS.POSTS).doc(id).get();
+    const doc = (res && res.data) || null;
+    if (!doc) return null;
+    const post = normalizePost(doc);
+    const exists = cache.posts.some(function (item) {
+      return item && item.id === post.id;
+    });
+    if (!exists) {
+      cache.posts.push(post);
+      cache.posts.sort(function (a, b) { return (b.createTime || 0) - (a.createTime || 0); });
+    }
+    return post;
+  } catch (err) {
+    console.warn('[store] 按 id 取帖子失败 id=' + id + ' code=' +
+      ((err && (err.errCode || err.code)) || '') + '：', err);
+    return null;
+  }
+}
+
 /* ---------------- 一人一帖 ----------------
    业务规则：同一用户同时只允许存在一条 status === 'active' 的帖子。
    这里只查内存缓存（同步），页面点 + 号 / 发布时先用它做体验层拦截；
@@ -907,6 +938,7 @@ module.exports = {
   // posts
   getPosts,
   findPost,
+  fetchPostById,
   syncPosts,
   savePost,
   removePost,

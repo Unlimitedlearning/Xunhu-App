@@ -1,0 +1,9 @@
+{
+  "name": "review",
+  "version": "1.0.0",
+  "description": "双向评价：A 对 B 唯一记录（查重后新增/覆盖）+ 匿名回传",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}

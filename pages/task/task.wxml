@@ -39,8 +39,8 @@
 
     <view class="empty-state" wx:if="{{sentList.length === 0}}">
       <text class="icon">📤</text>
-      <view class="text">你还没有发出任何申请</view>
-      <view class="sub-text">去「大厅」寻找志同道合的队友吧！</view>
+      <view class="text">你还没有申请过任何项目哦</view>
+      <view class="sub-text">去「大厅」看看有没有合适的机会吧</view>
     </view>
   </view>
 
@@ -82,7 +82,7 @@
 
     <view class="empty-state" wx:if="{{receivedList.length === 0}}">
       <text class="icon">📭</text>
-      <view class="text">暂时还没有人申请你的寻呼</view>
+      <view class="text">暂时还没有人申请你的项目</view>
       <view class="sub-text">发布一条寻呼，让同学找到你</view>
     </view>
   </view>

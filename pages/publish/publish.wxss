@@ -2,7 +2,7 @@
 .container {
   padding: 30rpx;
   padding-bottom: 60rpx;
-  background-color: #f5f5f5;
+  background-color: #f5f6f8;
   min-height: 100vh;
   box-sizing: border-box; /* 防止 padding 把宽度撑破 */
   display: flex;
@@ -11,11 +11,12 @@
 
 .form-group {
   background-color: #ffffff;
-  border-radius: 16rpx;
+  border-radius: var(--radius-card, 24rpx);
   padding: 30rpx;
   margin-bottom: 30rpx;
   width: 100%;
   box-sizing: border-box;
+  box-shadow: var(--shadow-card, 0 4rpx 16rpx rgba(0, 0, 0, 0.03));
 }
 
 /* 标签行：左标题 + 右字数统计 */
@@ -30,7 +31,7 @@
   display: block;
   font-size: 30rpx;
   font-weight: bold;
-  color: #333;
+  color: var(--color-title, #1A1A1A);
   margin-bottom: 20rpx;
 }
 
@@ -50,7 +51,7 @@
 /* 字数统计 */
 .counter {
   font-size: 24rpx;
-  color: #999999;
+  color: var(--color-sub, #8A8A8A);
   flex-shrink: 0;
   white-space: nowrap;
 }
@@ -64,7 +65,8 @@
   border-radius: 12rpx;
   font-size: 28rpx;
   background-color: #fafafa;
-  color: #333333;
+  color: var(--color-title, #1A1A1A);
+  transition: border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 .input {
@@ -78,11 +80,19 @@
   line-height: 1.5;
 }
 
+/* 聚焦态：边框变微信绿 + 极淡绿光晕，明确告诉用户"正在这里输入" */
+.input.field-focus,
+.textarea.field-focus {
+  border-color: #07c160;
+  background-color: #ffffff;
+  box-shadow: 0 0 0 4rpx rgba(7, 193, 96, 0.10);
+}
+
 /* 输入框下方的说明文字 */
 .tip {
   display: block;
   font-size: 22rpx;
-  color: #999999;
+  color: var(--color-sub, #8A8A8A);
   margin-top: 12rpx;
   line-height: 1.4;
 }
@@ -95,7 +105,7 @@
   border-radius: 12rpx;
   font-size: 28rpx;
   background-color: #fafafa;
-  color: #333;
+  color: var(--color-title, #1A1A1A);
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -103,7 +113,7 @@
 
 .arrow {
   font-size: 20rpx;
-  color: #999;
+  color: var(--color-sub, #8A8A8A);
   flex-shrink: 0;
   white-space: nowrap;
 }
@@ -111,7 +121,7 @@
 .submit-btn {
   margin-top: 20rpx;
   background-color: #07c160 !important;
-  border-radius: 50rpx;
+  border-radius: var(--radius-btn, 12rpx); /* 全站按钮圆角标准 */
   font-weight: bold;
   box-shadow: 0 8rpx 16rpx rgba(7, 193, 96, 0.2);
 }

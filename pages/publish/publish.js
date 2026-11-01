@@ -17,7 +17,8 @@ Page({
     title: '',
     content: '',
     tagStr: '',
-    contact: ''
+    contact: '',
+    focusField: '' // 当前聚焦的输入框：title / content / tag / contact
   },
 
   onLoad: function () {
@@ -48,6 +49,18 @@ Page({
     this.setData({
       categoryIndex: Number(e.detail.value)
     });
+  },
+
+  // 输入框聚焦：给当前字段加绿边高亮（提升交互反馈）
+  onFieldFocus: function (e) {
+    this.setData({
+      focusField: e.currentTarget.dataset.field || ''
+    });
+  },
+
+  // 失焦：清空高亮
+  onFieldBlur: function () {
+    this.setData({ focusField: '' });
   },
 
   submitPost: function () {
@@ -126,13 +139,14 @@ Page({
         wx.showToast({ title: '网络不佳，已存草稿', icon: 'none' });
       }
 
-      // 清空表单（成功失败都清）
+      // 清空表单（成功失败都清），并清掉聚焦高亮
       this.setData({
         categoryIndex: 0,
         title: '',
         content: '',
         tagStr: '',
-        contact: ''
+        contact: '',
+        focusField: ''
       });
 
       // PRD：延迟 1 秒后返回大厅

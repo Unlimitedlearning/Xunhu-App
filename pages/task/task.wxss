@@ -1,6 +1,6 @@
 /* pages/task/task.wxss */
 page {
-  background-color: #f5f5f5;
+  background-color: #f5f6f8;
 }
 
 .page-container {
@@ -15,10 +15,10 @@ page {
   display: flex;
   align-items: center;
   background-color: #ffffff;
-  border-radius: 16rpx;
+  border-radius: var(--radius-card, 24rpx);
   padding: 8rpx;
   margin-bottom: 20rpx;
-  box-shadow: 0 4rpx 12rpx rgba(0, 0, 0, 0.05);
+  box-shadow: var(--shadow-card, 0 4rpx 16rpx rgba(0, 0, 0, 0.03));
 }
 
 .tab-item {
@@ -29,7 +29,7 @@ page {
   height: 76rpx;
   font-size: 28rpx;
   color: #666666;
-  border-radius: 12rpx;
+  border-radius: var(--radius-btn, 12rpx);
   white-space: nowrap;
   flex-shrink: 0;
 }
@@ -43,10 +43,10 @@ page {
 /* 申请卡片 */
 .app-card {
   background-color: #ffffff;
-  border-radius: 16rpx;
-  padding: 24rpx;
+  border-radius: var(--radius-card, 24rpx);
+  padding: 32rpx;
   margin-bottom: 20rpx;
-  box-shadow: 0 4rpx 12rpx rgba(0, 0, 0, 0.05);
+  box-shadow: var(--shadow-card, 0 4rpx 16rpx rgba(0, 0, 0, 0.03));
 }
 
 .card-header {
@@ -61,7 +61,7 @@ page {
   min-width: 0;
   font-size: 32rpx;
   font-weight: bold;
-  color: #333333;
+  color: var(--color-title, #1A1A1A);
   line-height: 1.4;
   word-break: break-all;
 }
@@ -73,7 +73,7 @@ page {
   font-weight: bold;
   line-height: 1;
   padding: 8rpx 14rpx;
-  border-radius: 6rpx;
+  border-radius: 8rpx;
   flex-shrink: 0;
   white-space: nowrap;
 }
@@ -99,7 +99,7 @@ page {
 
 .info-item {
   font-size: 26rpx;
-  color: #999999;
+  color: var(--color-sub, #8A8A8A);
 }
 
 /* 已同意的联系方式 */
@@ -134,7 +134,7 @@ page {
 
 .tip-text {
   font-size: 24rpx;
-  color: #bbbbbb;
+  color: var(--color-sub, #8A8A8A);
   line-height: 1.4;
 }
 
@@ -152,7 +152,7 @@ page {
   line-height: 64rpx;
   height: 64rpx;
   padding: 0 40rpx;
-  border-radius: 32rpx;
+  border-radius: var(--radius-btn, 12rpx); /* 全站按钮圆角标准 */
   font-weight: bold;
   flex-shrink: 0;
   white-space: nowrap;
@@ -164,7 +164,7 @@ page {
 }
 
 .btn-reject {
-  background-color: #f5f5f5;
+  background-color: #f7f8fa;
   color: #666666;
   border: 1rpx solid #e5e5e5;
 }
@@ -175,19 +175,27 @@ page {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  height: 60vh;
-  color: #999999;
+  height: 55vh;
+  padding: 0 40rpx;
+  box-sizing: border-box;
 }
 .icon {
-  font-size: 100rpx;
-  margin-bottom: 30rpx;
+  font-size: 88rpx;
+  line-height: 1;
+  margin-bottom: 28rpx;
+  opacity: 0.45;
 }
 .text {
-  font-size: 32rpx;
-  color: #333333;
+  font-size: 30rpx;
+  color: var(--color-title, #1A1A1A);
   font-weight: bold;
+  text-align: center;
+  line-height: 1.5;
 }
 .sub-text {
   font-size: 26rpx;
-  margin-top: 10rpx;
+  margin-top: 12rpx;
+  color: var(--color-sub, #8A8A8A);
+  text-align: center;
+  line-height: 1.5;
 }

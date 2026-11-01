@@ -37,16 +37,19 @@ Page({
     });
   },
 
+  // 同步渲染：本地数据直接读，首屏即为真实卡片，无骨架屏、无定时器
   refreshList: function () {
-    // 本地缓存（含草稿）+ mockData，统一按发布时间倒序
+    this.setData({
+      postList: this.buildPostList()
+    });
+  },
+
+  // 本地缓存（含草稿）+ mockData，统一按发布时间倒序
+  buildPostList: function () {
     const heatOverrides = store.getHeatOverrides();
-    const postList = store.getPosts()
+    return store.getPosts()
       .map(item => this.formatPost(item, heatOverrides))
       .sort((a, b) => b.createTime - a.createTime);
-
-    this.setData({
-      postList: postList
-    });
   },
 
   /**

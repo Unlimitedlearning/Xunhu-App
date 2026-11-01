@@ -91,5 +91,24 @@ Page({
     });
 
     wx.showToast({ title: '资料已保存', icon: 'success' });
+  },
+
+  /**
+   * 协议 / 隐私指引跳转
+   * 双重保障：<navigator> 自身能跳；这里再给链接文字加 catchtap（阻断冒泡，不会再触发 navigator 默认行为），
+   * 真正用 wx.navigateTo 跳一次，任何情况下都只跳一页，且失败时不再“无声无息”。
+   */
+  onAgreementTap: function (e) {
+    const path = e.currentTarget.dataset.path || '/pages/agreement/agreement';
+    wx.navigateTo({
+      url: path,
+      fail: function (err) {
+        console.error('[agreement] navigateTo fail:', err);
+        wx.showToast({
+          title: '页面跳转失败，请重新编译后再试',
+          icon: 'none'
+        });
+      }
+    });
   }
 });

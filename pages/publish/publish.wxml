@@ -18,7 +18,13 @@
       <text class="label">寻呼标题<text class="required">*</text></text>
       <text class="counter">{{title.length}}/15</text>
     </view>
-    <input class="input" placeholder="例如：挑战杯项目招前端" maxlength="15" model:value="{{title}}" />
+    <input class="input {{focusField === 'title' ? 'field-focus' : ''}}"
+           placeholder="例如：挑战杯项目招前端"
+           maxlength="15"
+           model:value="{{title}}"
+           data-field="title"
+           bindfocus="onFieldFocus"
+           bindblur="onFieldBlur" />
   </view>
 
   <!-- 详细描述 -->
@@ -27,20 +33,36 @@
       <text class="label">详细描述<text class="required">*</text></text>
       <text class="counter">{{content.length}}/500</text>
     </view>
-    <textarea class="textarea" placeholder="详细描述一下需求、目前进度、以及需要队友做什么..." maxlength="500" model:value="{{content}}"></textarea>
+    <textarea class="textarea {{focusField === 'content' ? 'field-focus' : ''}}"
+              placeholder="详细描述一下需求、目前进度、以及需要队友做什么..."
+              maxlength="500"
+              model:value="{{content}}"
+              data-field="content"
+              bindfocus="onFieldFocus"
+              bindblur="onFieldBlur"></textarea>
   </view>
 
   <!-- 标签 -->
   <view class="form-group">
     <text class="label">关键词标签</text>
-    <input class="input" placeholder="用空格隔开，例如：Vue 大挑 前端" model:value="{{tagStr}}" />
+    <input class="input {{focusField === 'tag' ? 'field-focus' : ''}}"
+           placeholder="用空格隔开，例如：Vue 大挑 前端"
+           model:value="{{tagStr}}"
+           data-field="tag"
+           bindfocus="onFieldFocus"
+           bindblur="onFieldBlur" />
     <text class="tip">最多 4 个标签，超出部分自动忽略</text>
   </view>
 
   <!-- 联系方式 -->
   <view class="form-group">
     <text class="label">联系方式<text class="required">*</text></text>
-    <input class="input" placeholder="微信号 / QQ / 手机号，仅对已同意的同学展示" model:value="{{contact}}" />
+    <input class="input {{focusField === 'contact' ? 'field-focus' : ''}}"
+           placeholder="微信号 / QQ / 手机号，仅对已同意的同学展示"
+           model:value="{{contact}}"
+           data-field="contact"
+           bindfocus="onFieldFocus"
+           bindblur="onFieldBlur" />
     <text class="tip">仅在你同意申请后，才会展示给申请人</text>
   </view>
 

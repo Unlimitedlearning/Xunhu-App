@@ -1,0 +1,22 @@
+/* app.wxss —— 全局视觉基线（全站圆角 / 阴影 / 文字颜色单点维护） */
+
+page {
+  /* 圆角标准：卡片 24rpx，按钮 12rpx */
+  --radius-card: 24rpx;
+  --radius-btn: 12rpx;
+
+  /* 阴影标准：卡片只用这一档，极浅 */
+  --shadow-card: 0 4rpx 16rpx rgba(0, 0, 0, 0.03);
+
+  /* 文字层级：主文案不死亡黑，次要文案统一浅灰 */
+  --color-title: #1A1A1A;
+  --color-sub: #8A8A8A;
+
+  /* 品牌色 */
+  --color-brand: #07c160;
+
+  background-color: #f5f6f8;
+  color: #1A1A1A;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}

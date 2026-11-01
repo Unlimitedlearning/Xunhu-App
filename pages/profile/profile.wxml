@@ -60,4 +60,27 @@
 
   </block>
 
+  <!-- 信任背书：协议 / 隐私指引入口（未登录也展示；显式绝对路径 + JS 兜底，保证可点击） -->
+  <view class="agreement-links">
+    <navigator class="agreement-link"
+               url="/pages/agreement/agreement"
+               open-type="navigate"
+               hover-class="agreement-link-hover"
+               hover-stay-time="80">
+      <text class="agreement-link-text"
+            data-path="/pages/agreement/agreement"
+            catchtap="onAgreementTap">《用户服务协议》</text>
+    </navigator>
+
+    <navigator class="agreement-link"
+               url="/pages/agreement/agreement"
+               open-type="navigate"
+               hover-class="agreement-link-hover"
+               hover-stay-time="80">
+      <text class="agreement-link-text"
+            data-path="/pages/agreement/agreement"
+            catchtap="onAgreementTap">《隐私保护指引》</text>
+    </navigator>
+  </view>
+
 </view>

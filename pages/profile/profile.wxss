@@ -6,7 +6,7 @@ page {
 .page {
   min-height: 100vh;
   padding: 24rpx;
-  padding-bottom: 60rpx;
+  padding-bottom: 80rpx; /* 给底部协议入口留出安全距离，避免贴住 tabBar 边缘 */
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
@@ -16,17 +16,17 @@ page {
 /* 通用卡片：与大厅视觉保持一致 */
 .card {
   background-color: #ffffff;
-  border-radius: 24rpx;
+  border-radius: var(--radius-card, 24rpx);
   padding: 32rpx;
-  box-shadow: 0 4rpx 16rpx rgba(0, 0, 0, 0.03);
+  box-shadow: var(--shadow-card, 0 4rpx 16rpx rgba(0, 0, 0, 0.03));
 }
 
 /* ---------- 未登录 ---------- */
 .login-card {
   background-color: #ffffff;
-  border-radius: 24rpx;
+  border-radius: var(--radius-card, 24rpx);
   padding: 60rpx 32rpx;
-  box-shadow: 0 4rpx 16rpx rgba(0, 0, 0, 0.03);
+  box-shadow: var(--shadow-card, 0 4rpx 16rpx rgba(0, 0, 0, 0.03));
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -48,7 +48,7 @@ page {
   font-weight: bold;
   color: #ffffff;
   background-color: #07c160;
-  border-radius: 40rpx;
+  border-radius: var(--radius-btn, 12rpx); /* 全站按钮圆角标准 */
   padding: 0;
 }
 
@@ -87,20 +87,20 @@ page {
 .name {
   font-size: 36rpx;
   font-weight: bold;
-  color: #333333;
+  color: var(--color-title, #1A1A1A);
   margin-bottom: 10rpx;
 }
 
 .student-id {
   font-size: 26rpx;
-  color: #999999;
+  color: var(--color-sub, #8A8A8A);
 }
 
 /* ---------- 可编辑资料 ---------- */
 .section-title {
   font-size: 28rpx;
   font-weight: bold;
-  color: #333333;
+  color: var(--color-title, #1A1A1A);
   margin-bottom: 16rpx;
 }
 
@@ -116,7 +116,7 @@ page {
   line-height: 1.6;
   color: #333333;
   background-color: #f7f8fa;
-  border-radius: 16rpx;
+  border-radius: 12rpx;
   padding: 20rpx;
 }
 
@@ -127,7 +127,7 @@ page {
   font-size: 28rpx;
   color: #333333;
   background-color: #f7f8fa;
-  border-radius: 16rpx;
+  border-radius: 12rpx;
   padding: 0 20rpx;
 }
 
@@ -148,7 +148,7 @@ page {
   font-weight: bold;
   color: #07c160;
   background-color: #e8f8ec;
-  border-radius: 40rpx;
+  border-radius: var(--radius-btn, 12rpx); /* 全站按钮圆角标准 */
   padding: 0;
 }
 
@@ -203,6 +203,39 @@ page {
   margin-top: 10rpx;
   text-align: center;
   font-size: 26rpx;
-  color: #999999;
+  color: var(--color-sub, #8A8A8A);
   padding: 24rpx 0;
+}
+
+/* ---------- 底部协议入口（信任背书） ---------- */
+.agreement-links {
+  position: relative;   /* 建立层叠上下文 */
+  z-index: 20;          /* 保证在退出登录等元素之上，不会被遮住点击 */
+  margin-top: auto;     /* 页面 flex 纵向布局 + min-height:100vh，把协议入口顶到最底部 */
+  padding: 32rpx 0 8rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+/* 链接：加大点击热区（高 64rpx），避免“点不动” */
+.agreement-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 64rpx;
+  padding: 0 16rpx;
+  font-size: 24rpx;
+  color: #b0b0b0;
+  line-height: 1.6;
+}
+
+.agreement-link-text {
+  color: #b0b0b0;
+  font-size: 24rpx;
+}
+
+.agreement-link-hover {
+  opacity: 0.6;
 }

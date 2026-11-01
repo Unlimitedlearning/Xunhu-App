@@ -18,19 +18,26 @@ page {
   gap: 20rpx; /* 卡片之间的间距 */
 }
 
-/* 卡片整体样式：纯白 + 大圆角 + 极浅阴影 */
+/* 列表容器：卡片之间统一 20rpx 间距（与骨架屏保持一致） */
+.post-list {
+  display: flex;
+  flex-direction: column;
+  gap: 20rpx;
+}
+
+/* 卡片整体样式：纯白 + 大圆角 + 极浅阴影（全站统一标准） */
 .post-card {
   position: relative;
   background-color: #ffffff;
-  border-radius: 24rpx;
+  border-radius: var(--radius-card, 24rpx);
   padding: 32rpx;
-  box-shadow: 0 4rpx 16rpx rgba(0, 0, 0, 0.03);
+  box-shadow: var(--shadow-card, 0 4rpx 16rpx rgba(0, 0, 0, 0.03));
 }
 
-/* 描述 */
+/* 描述：与标题同层级颜色（#1A1A1A，不死黑），靠字号/字重拉开层次 */
 .post-desc {
   font-size: 28rpx;
-  color: #666666;
+  color: var(--color-title, #1A1A1A);
   margin-top: 16rpx;
   line-height: 1.6;
   /* 超过两行省略号 */
@@ -107,7 +114,7 @@ page {
 .post-title {
   font-size: 34rpx;
   font-weight: bold;
-  color: #333333;
+  color: var(--color-title, #1A1A1A);
   flex: 1;
   min-width: 0;         /* 允许标题收缩，配合标签 flex-shrink: 0 */
   line-height: 40rpx;   /* 给标题一个行高 */
@@ -159,7 +166,7 @@ page {
 
 .author {
   font-size: 24rpx;
-  color: #999999;
+  color: var(--color-sub, #8A8A8A);
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -189,9 +196,35 @@ page {
   color: #ffffff;
   background-color: #07c160;
   padding: 8rpx 24rpx;
-  border-radius: 30rpx;
+  border-radius: var(--radius-btn, 12rpx); /* 全站按钮圆角标准 */
   flex-shrink: 0;
   white-space: nowrap;
+}
+
+/* ---------- 空状态：极简灰色提示卡片 ---------- */
+.empty-card {
+  background-color: #fafbfc;
+  border: 1rpx solid #ededed;
+  border-radius: var(--radius-card, 24rpx);
+  padding: 72rpx 40rpx;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.empty-emoji {
+  font-size: 72rpx;
+  line-height: 1;
+  margin-bottom: 24rpx;
+  opacity: 0.5;
+}
+
+.empty-text {
+  font-size: 26rpx;
+  color: var(--color-sub, #8A8A8A);
+  line-height: 1.7;
+  text-align: center;
 }
 
 /* 拖拽区域 */

@@ -1,12 +1,34 @@
 // pages/publish/publish.js
-// 发布页：校验 + 模拟上传 + 落地本地缓存，不连真实云端
-// 状态流转：组装时默认 status: 'auditing'，上传成功保持 auditing，上传失败强改 status: 'draft'
+// 发布页：校验 + 上传（云函数 publish：云端严格防御 + 直接上线）
+// 风控分层：
+//   第一层（本页）前端轻量拦截：title/content/tags/contact 拼全文 -> constants.checkTextViolation
+//             命中直接 toast 具体违规词，不发请求（纯体验，能被改包绕过）
+//   第二层（云端）绝对防线：cloudfunctions/publish 写入前用同一套词库 + 净化正则再校一遍（真的拦截）
+// 状态流转：
+//   通过  -> 云端直接写 status: 'active'（寻呼中，大厅可见可点入）
+//   拦截  -> 不写库，表单保留，提示具体违规词 / 「内容包含违规信息」
+//   网络/云端异常 -> 存本地草稿（status: 'draft'），下次进发布页可恢复
 
 const store = require("../../utils/store");
 const constants = require("../../utils/constants");
 
 const CATEGORY_LIST = constants.CATEGORY_LIST;
-const FORBIDDEN_WORDS = constants.FORBIDDEN_WORDS;
+const CONTENT_RISKY_MESSAGE = constants.CONTENT_RISKY_MESSAGE;
+// 违禁词校验统一走 constants.checkTextViolation（净化匹配：小写 + 去空白 + 去全部标点 + 拼音兜底）
+const checkTextViolation = constants.checkTextViolation;
+
+/* ---------------- 违禁词全文匹配工具 ---------------- */
+
+/**
+ * 全文本拼接：标题 + 描述 + 标签 + 联系方式 -> 一个完整长字符串
+ * 为什么必须拼一起：分字段各自匹配会被「拆字」绕过
+ *   例：标题写「代」、正文写「课」，单字段都不含「代课」，拼起来才露馅
+ */
+function buildFullText(title, content, tags, contact) {
+  return [title, content, (tags || []).join(' '), contact]
+    .filter(function (item) { return !!item; })
+    .join(' ');
+}
 
 Page({
   data: {
@@ -107,23 +129,25 @@ Page({
       return;
     }
 
-    // 2. 违禁词拦截（标题 + 描述）
-    const hitWord = FORBIDDEN_WORDS.find(function (word) {
-      return title.indexOf(word) > -1 || content.indexOf(word) > -1;
-    });
-    if (hitWord) {
-      wx.showToast({ title: '内容含违规词「' + hitWord + '」，请修改后重试', icon: 'none' });
-      return;
-    }
-
-    // 3. 标签：空格分隔，最多 4 个（PRD 数据模型）
+    // 2. 标签：空格分隔，最多 4 个（PRD 数据模型）
+    //    先解析出 tags，才能让标签一起参与违禁词匹配（标签藏违规词也是常见绕过手段）
     const tags = (this.data.tagStr || '')
       .split(' ')
       .map(item => item.trim())
       .filter(item => item !== '')
       .slice(0, 4);
 
-    // 4. 按 PRD 数据模型组装，状态直接默认「审核中」；id 由云端生成
+    // 3. 违禁词拦截：标题 + 描述 + 标签 + 联系方式 合并成全文，做「净化匹配」
+    //    净化 = 转小写 + 删空格 + 删全部中英文标点 + 删零宽字符 + 拼音兜底
+    //    「代 课」「代*考」「代　课」「dai ke」都能拦住（云端有一份相同实现做绝对防线）
+    const fullText = buildFullText(title, content, tags, contact);
+    const violation = checkTextViolation(fullText);
+    if (!violation.pass) {
+      wx.showToast({ title: '含违规词「' + violation.word + '」，请修改后重试', icon: 'none' });
+      return;
+    }
+
+    // 4. 按 PRD 数据模型组装（status 不在这里定：云端通过才写 'active'）
     const newPost = {
       category: category,
       title: title,
@@ -131,60 +155,88 @@ Page({
       tags: tags,
       authorName: nickname,
       contact: contact,
-      status: 'auditing', // 提交即审核中
-      heat: 0,
       createTime: Date.now()
     };
 
-    // 5. 模拟上传
+    // 5. 上传（云函数 publish 内部再做一次严格校一遍，才是绝对防线）
     this.uploadPost(newPost);
   },
 
   /**
-   * 模拟上传（项目暂不接真实审核后台）：
-   * 成功 -> 写入云数据库 posts，status 保持 'auditing'（大厅显示橙色「审核中」）
-   * 失败 -> 存成本地草稿（大厅仍能看到红色「草稿」卡片，下次进发布页可恢复）
-   * 无论成功失败：清空表单 -> 延迟 1 秒返回
+   * 上传：调云函数 publish
+   *   成功 -> 云端 status = 'active'（通过直接上线）
+   *   云端判定违规 -> 提示修改，**不清表单、不存草稿**（草稿是给网络故障用的，不能让违规内容落盘反复提交）
+   *   其他异常 -> 存草稿，下次进发布页能恢复
    */
   uploadPost: function (postData) {
     const that = this;
-    wx.showLoading({ title: '发布中...' });
+    wx.showLoading({ title: '审核中...', mask: true });
 
-    setTimeout(async function () {
+    store.savePost(postData).then(function () {
       wx.hideLoading();
+      store.removeDraft(); // 发布成功后清掉旧草稿
+      wx.showToast({ title: '发布成功，已上线', icon: 'success' });
+      that.resetForm();
+      that.backToHall(1200);
+    }).catch(function (err) {
+      wx.hideLoading();
+      console.error('[publish] 发布失败 code=' + (err && err.code) + '：', err);
 
-      const isSuccess = Math.random() > 0.4; // 模拟 60% 成功率
-
-      try {
-        if (isSuccess) {
-          await store.savePost(Object.assign({}, postData, { status: 'auditing' }));
-          store.removeDraft(); // 上传成功后清掉旧草稿
-          wx.showToast({ title: '发布成功', icon: 'success' });
-        } else {
-          store.saveDraft(Object.assign({}, postData, { status: 'draft' }));
-          wx.showToast({ title: '网络不佳，已存草稿', icon: 'none' });
-        }
-      } catch (err) {
-        console.error('[publish] 写入云数据库失败：', err);
-        store.saveDraft(Object.assign({}, postData, { status: 'draft' }));
-        wx.showToast({ title: '发布失败，已存草稿', icon: 'none' });
+      // 1. 机审不通过：原地修改，不离开页面（云端标出了具体违规词就一并提示）
+      if (err && err.code === 'CONTENT_RISKY') {
+        wx.showModal({
+          title: '内容未通过审核',
+          content: err.hitWord
+            ? '内容含违规词「' + err.hitWord + '」，请修改后重试'
+            : (err.message || CONTENT_RISKY_MESSAGE),
+          showCancel: false,
+          confirmText: '去修改'
+        });
+        return;
       }
 
-      // 清空表单（成功失败都清），并清掉聚焦高亮
-      that.setData({
-        categoryIndex: 0,
-        title: '',
-        content: '',
-        tagStr: '',
-        contact: '',
-        focusField: ''
-      });
+      // 2. 资料未完善（学号/昵称/联系方式云端没有）：引导去「我的」
+      if (err && err.code === 'PROFILE_NOT_READY') {
+        wx.showModal({
+          title: '资料未完善',
+          content: err.message || '请先在「我的」页面完善资料',
+          confirmText: '去完善',
+          success: function (res) {
+            if (res.confirm) wx.switchTab({ url: '/pages/profile/profile' });
+          }
+        });
+        return;
+      }
 
-      // PRD：延迟 1 秒后返回大厅
-      setTimeout(function () {
+      // 3. 其他（网络 / 云函数未部署 / 集合不存在）：存草稿，不让用户白写
+      store.saveDraft(Object.assign({}, postData, { status: 'draft' }));
+      wx.showToast({ title: '发布失败，已存草稿', icon: 'none' });
+      that.resetForm();
+      that.backToHall(1200);
+    });
+  },
+
+  // 清空表单（成功后调用），同时清掉聚焦高亮
+  resetForm: function () {
+    this.setData({
+      categoryIndex: 0,
+      title: '',
+      content: '',
+      tagStr: '',
+      contact: '',
+      focusField: ''
+    });
+  },
+
+  // 延迟返回大厅（发布页是从大厅 navigateTo 进来的，正常能 back）
+  backToHall: function (delay) {
+    setTimeout(function () {
+      const pages = getCurrentPages();
+      if (pages.length > 1) {
         wx.navigateBack();
-      }, 1000);
-
-    }, 800);
+      } else {
+        wx.switchTab({ url: '/pages/index/index' });
+      }
+    }, delay || 1000);
   }
 });

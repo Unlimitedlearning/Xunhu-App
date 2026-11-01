@@ -30,14 +30,14 @@
 
     <!-- 资料编辑：昵称 / 学号 / 简历 / 联系方式 -->
     <view class="card">
-      <view class="section-title">昵称</view>
+      <view class="section-title">昵称<text class="required">*</text></view>
       <input class="text-input"
              placeholder="填一个同学们能认出你的名字"
              maxlength="20"
              value="{{nickname}}"
              bindinput="onNicknameInput" />
 
-      <view class="section-title section-title-gap">学号<text class="required" wx:if="{{!isStudentIdBound}}">*</text></view>
+      <view class="section-title section-title-gap">学号<text class="required">*</text></view>
       <input class="text-input {{isStudentIdBound ? 'text-input-locked' : ''}}"
              type="number"
              disabled="{{isStudentIdBound}}"
@@ -60,7 +60,7 @@
                 value="{{resume}}"
                 bindinput="onResumeInput"></textarea>
 
-      <view class="section-title section-title-gap">联系方式</view>
+      <view class="section-title section-title-gap">联系方式<text class="required">*</text></view>
       <input class="contact-input"
              placeholder="微信号 / QQ / 手机号"
              maxlength="40"

@@ -92,21 +92,26 @@ Page({
   },
 
   /**
-   * 卡片点击：双重校验 —— 先登录、再资料完善，都通过才看审核状态与详情
+   * 卡片点击：先看是不是审查中（打码），再校验登录 / 资料完善，都过了才跳详情
    * （登录不代表能使用：昵称/联系方式缺失时对方无法联系你，所以要在入口拦住）
    */
   goToDetail: function (e) {
     const id = e.currentTarget.dataset.id;
     const status = e.currentTarget.dataset.status;
 
-    // 1 + 2. 未登录 / 资料未完善：(guard.ensureReady 内部已弹窗并引导去「我的」)
-    if (!guard.ensureReady()) return;
-
-    // 3. 审核中拦截
+    // 1. 审查中（被举报打码 / 机审待复核）拦截跳转：
+    //    先于登录/资料校验，否则未登录用户点卡片只会看到「请先登录」，反而不知道内容有问题
     if (status === 'auditing') {
-      wx.showToast({ title: '该信息还在审核中，暂不可查看', icon: 'none' });
+      wx.showToast({
+        title: constants.AUDITING_BLOCK_MESSAGE, // '该内容涉嫌违规，正在审查中'
+        icon: 'none',
+        duration: 1800
+      });
       return;
     }
+
+    // 2 + 3. 未登录 / 资料未完善：(guard.ensureReady 内部已弹窗并引导去「我的」)
+    if (!guard.ensureReady()) return;
 
     wx.navigateTo({
       url: "/pages/detail/detail?id=" + id

@@ -5,10 +5,12 @@
 //   1) 读：先 await syncPosts() / syncApplications() 把云数据刷进缓存，再用同步的
 //      getPosts() / findPost() / getApplications() 渲染。这样页面只加一行 await，
 //      渲染逻辑（排序、兜底、掩码）完全不用改。
-//   2) 写：savePost / removePost / addApplication / updateApplicationStatus / persistHeat
+//   2) 写：savePost / removePost / addApplication / updateApplicationStatus / persistHeat / submitReport
 //      都返回 Promise，调用处必须 await。
 //   3) 热度：走云函数 heat 做原子自增（别人的帖子客户端没有写权限，必须走服务端）。
-//   4) 登录态标记 / 草稿 / 举报 / 热度防刷记录 留在本地 Storage；
+//   4) 发布：走云函数 publish（内容安全机审 + status 直接 active，服务端定 status/authorName）；
+//      举报：走云函数 report（写 reports 集合 + 帖子改 auditing）；
+//      登录态标记 / 草稿 / 热度防刷记录 留在本地 Storage；
 //      用户资料（昵称/学号/简历/联系方式）走云端 users 集合（云函数 user 读写），
 //      前端不再保留任何写死的身份或默认资料。
 //   5) id 统一等于云文档 _id；作者身份用 authorOpenid 字段（真实帖子的值 = 当前 openid）。
@@ -278,6 +280,33 @@ function getState() {
   };
 }
 
+/* ---------------- 云函数封装 ---------------- */
+
+// 统一调用 publish 云函数：把「函数未部署」「机审拦截」「校验失败」都变成可捕获的错误
+// err.code 取值：CONTENT_RISKY / PROFILE_NOT_READY / CATEGORY_INVALID / ... / NO_OPENID
+async function callPublishFunction(data) {
+  let res;
+  try {
+    res = await wx.cloud.callFunction({ name: CLOUD_FUNCTIONS.PUBLISH, data: data });
+  } catch (err) {
+    // 函数不存在 / 网络失败
+    const wrapped = new Error('publish 云函数调用失败，请确认已上传并部署');
+    wrapped.code = 'FUNCTION_CALL_FAILED';
+    wrapped.cause = err;
+    throw wrapped;
+  }
+
+  const result = (res && res.result) || {};
+  if (!result.ok) {
+    const err = new Error(result.message || constants.CONTENT_RISKY_MESSAGE);
+    err.code = result.code || 'PUBLISH_FAILED';
+    // 云端本地词库命中时会回传具体违规词，页面提示用（机审判违规时可能为空）
+    err.hitWord = result.hitWord || '';
+    throw err;
+  }
+  return result;
+}
+
 /* ---------------- 帖子 posts ---------------- */
 
 // 单份本地草稿（上传失败时保留，离线可见，也仍会出现在大厅里带「草稿」标识）
@@ -320,25 +349,37 @@ async function syncPosts() {
   return pullPosts();
 }
 
-// 新增帖子：id 由云端生成，authorOpenid 默认当前用户
+// 新增帖子：走云函数 publish。
+// 注意：status / authorOpenid / authorName 全部由服务端决定（机审通过即 'active'），
+// 前端传进来的 status 会被忽略 —— 否则改包就能把「审核中」直接刷成上线。
 async function savePost(post) {
   await ensureInit();
-  const data = {
+  const payload = {
     category: post.category,
-    title: post.title || '',
-    content: post.content || '',
+    title: (post.title || '').trim(),
+    content: (post.content || '').trim(),
     tags: post.tags || [],
-    authorName: post.authorName || '',
-    contact: post.contact || '',
-    status: post.status || 'auditing',
-    heat: typeof post.heat === 'number' ? post.heat : 0,
-    createTime: post.createTime || Date.now(),
-    authorOpenid: post.authorOpenid || cache.openid
+    contact: (post.contact || '').trim()
   };
 
-  const res = await col(COLLECTIONS.POSTS).add({ data });
+  const result = await callPublishFunction(payload);
+
+  // 云端已落库，重新拉一次，保证别人（以及自己下一次刷新）能看到
   await pullPosts();
-  return Object.assign({}, data, { id: res._id });
+
+  return {
+    id: result.id || '',
+    category: payload.category,
+    title: payload.title,
+    content: payload.content,
+    tags: payload.tags,
+    contact: result.contact || payload.contact,
+    authorName: result.authorName || post.authorName || '',
+    authorOpenid: cache.openid,
+    status: result.status || 'active',
+    heat: 0,
+    createTime: post.createTime || Date.now()
+  };
 }
 
 async function removePost(postId) {
@@ -568,13 +609,46 @@ async function saveProfile(profile) {
   return cache.profile;
 }
 
-/* ---------------- 举报（仍在本机） ---------------- */
+/* ---------------- 举报（云端 reports 集合，云函数 report 写入） ----------------
+   流程：写一条举报记录 -> 帖子 status 改 'auditing'（大厅打码 + 不可点入 + 详情页拦截）
+   同一个 openid 对同一帖子只记一条（云端去重，重复举报不会报错，只会返回 duplicate: true） */
 
-function addReport(report) {
-  const reports = wx.getStorageSync(STORAGE_KEYS.REPORTS) || [];
-  reports.unshift(report);
-  wx.setStorageSync(STORAGE_KEYS.REPORTS, reports);
-  return reports;
+async function submitReport(report) {
+  const postId = (report && report.postId) || '';
+  if (!postId) throw new Error('缺少帖子 ID');
+
+  await ensureInit();
+
+  let res;
+  try {
+    res = await wx.cloud.callFunction({
+      name: CLOUD_FUNCTIONS.REPORT,
+      data: {
+        postId: postId,
+        reason: (report.reason || '').trim(),
+        desc: (report.desc || '').trim()
+      }
+    });
+  } catch (err) {
+    const wrapped = new Error('report 云函数调用失败，请确认已上传并部署');
+    wrapped.code = 'FUNCTION_CALL_FAILED';
+    wrapped.cause = err;
+    throw wrapped;
+  }
+
+  const result = (res && res.result) || {};
+  if (!result.ok) {
+    const err = new Error(result.message || '举报提交失败，请稍后重试');
+    err.code = result.code || 'REPORT_FAILED';
+    throw err;
+  }
+
+  // 云端已把帖子改成 auditing，本地缓存同步一份，
+  // 否则回到大厅 onShow 之前（或举报失败回退时）还会渲染旧状态
+  const cached = cache.posts.find(function (item) { return item.id === postId; });
+  if (cached) cached.status = result.status || 'auditing';
+
+  return result; // { ok, status, duplicate }
 }
 
 /* ---------------- 登录态 ---------------- */
@@ -649,7 +723,7 @@ module.exports = {
   syncProfile,
   getNickname,
   isProfileReady,
-  addReport,
+  submitReport,
 
   // auth
   isLoggedIn,

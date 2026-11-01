@@ -8,6 +8,14 @@ const constants = require("../../utils/constants");
 const CATEGORY_MAP = constants.CATEGORY_MAP;
 const POST_STATUS_MAP = constants.POST_STATUS_MAP;
 const REPORT_CATEGORIES = constants.REPORT_CATEGORIES;
+const AUDITING_BLOCK_MESSAGE = constants.AUDITING_BLOCK_MESSAGE;
+
+// 退回大厅（detail 可能是分享直达打开，栈里没上一页，统一 switchTab 回大厅）
+function backToHall(delay) {
+  setTimeout(function () {
+    wx.switchTab({ url: '/pages/index/index' });
+  }, delay || 1200);
+}
 
 Page({
   data: {
@@ -56,12 +64,11 @@ Page({
     // 发帖人视角：authorOpenid 是我
     const isOwner = !!openid && post.authorOpenid === openid;
 
-    // 状态限制：审核中的帖子只有发帖人本人能看（大厅已在入口拦截，这里再兜一层）
-    if (post.status === 'auditing' && !isOwner) {
-      wx.showToast({ title: '该信息还在审核中，暂不可查看', icon: 'none' });
-      setTimeout(function () {
-        wx.navigateBack();
-      }, 1200);
+    // 【审查拦截】status === 'auditing'（被举报打码 / 待复核）：任何人都不允许进入详情，
+    // 包括发帖人本人（先退回大厅，避免本人反复点自己的帖子又看不到）
+    if (post.status === 'auditing') {
+      wx.showToast({ title: AUDITING_BLOCK_MESSAGE, icon: 'none', duration: 1500 });
+      backToHall(1500);
       return;
     }
 
@@ -223,11 +230,13 @@ Page({
   },
 
   /**
-   * 举报：ActionSheet 选分类 -> Modal 填描述 -> 存本地
-   * 举报数据仍留在本机（未建 reports 集合），不接真实审核后台
+   * 举报：ActionSheet 选分类 -> Modal 填描述 -> 云函数 report
+   * 云端写入 reports 集合，并把帖子 status 改成 auditing（大厅打码 + 不可点入）
    */
   onReportClick: function () {
     const that = this;
+    if (!this.data.post) return;
+
     wx.showActionSheet({
       itemList: REPORT_CATEGORIES,
       success: function (res) {
@@ -245,21 +254,52 @@ Page({
       confirmText: '提交',
       success: function (res) {
         if (!res.confirm) return;
-        that.saveReport(category, res.content || '');
-        wx.showToast({ title: '举报成功，感谢反馈', icon: 'none' });
+        that.submitReport(category, res.content || '');
       }
     });
   },
 
-  saveReport: function (category, description) {
+  submitReport: async function (category, description) {
     const post = this.data.post;
-    store.addReport({
-      id: 'report_' + Date.now(),
-      postId: post ? post.id : '',
-      reporterId: store.getOpenId(),
-      category: category,
-      description: (description || '').trim(),
-      createTime: Date.now()
+    if (!post) return;
+
+    wx.showLoading({ title: '提交中...', mask: true });
+
+    let result;
+    try {
+      result = await store.submitReport({
+        postId: post.id,
+        reason: category,
+        desc: (description || '').trim()
+      });
+    } catch (err) {
+      wx.hideLoading();
+      console.error('[detail] 举报提交失败 code=' + (err && err.code) + '：', err);
+
+      if (err && err.code === 'SELF_REPORT') {
+        wx.showToast({ title: '不能举报自己发布的内容', icon: 'none' });
+        return;
+      }
+      wx.showToast({ title: (err && err.message) || '举报失败，请稍后重试', icon: 'none' });
+      return;
+    }
+
+    wx.hideLoading();
+
+    // 已结束的帖子只记举报、不改状态
+    if (result.status === 'ended') {
+      wx.showToast({ title: '举报已记录，感谢反馈', icon: 'none' });
+      return;
+    }
+
+    wx.showToast({ title: '举报成功，该内容已进入审查', icon: 'none', duration: 1500 });
+
+    // 帖子已进入审查：本页已经不能再看，同步状态后回大厅
+    this.setData({
+      post: Object.assign({}, post, { status: 'auditing' }),
+      statusKey: 'auditing',
+      statusText: POST_STATUS_MAP.auditing
     });
+    backToHall(1600);
   }
 });

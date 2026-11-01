@@ -230,6 +230,60 @@ Page({
   },
 
   /**
+   * 【发帖人】结束寻呼：底部左侧小字按钮
+   * 二次确认后把 status 改为 'ended' 并记录 endTime（云端数据库写入，仅本人有权改自己这条）
+   * 结束后：大厅「最新发布 / 最热招募」不再展示，只在「往期历史」里按 endTime 排序
+   */
+  onEndClick: function () {
+    const post = this.data.post;
+    if (!post) return;
+    if (post.status === 'ended') return; // 兜底：已结束不再弹确认框
+
+    const that = this;
+    wx.showModal({
+      title: '结束寻呼',
+      content: '结束后该信息将移入「往期历史」，且不再接收新的申请。确定结束吗？',
+      confirmText: '结束',
+      confirmColor: '#e53935',
+      cancelText: '再等等',
+      success: function (res) {
+        if (!res.confirm) return;
+        that.doEndPost();
+      }
+    });
+  },
+
+  // 真正写入：status -> ended + endTime
+  doEndPost: async function () {
+    const post = this.data.post;
+    if (!post) return;
+
+    wx.showLoading({ title: '处理中...', mask: true });
+
+    let endTime;
+    try {
+      endTime = await store.endPost(post.id);
+    } catch (err) {
+      wx.hideLoading();
+      console.error('[detail] 结束寻呼失败 code=' + (err && err.code) + '：', err);
+      wx.showToast({ title: (err && err.message) || '结束失败，请稍后重试', icon: 'none' });
+      return;
+    }
+
+    wx.hideLoading();
+
+    // 本页立即同步为已结束：左侧按钮变「已结束」置灰，顶部状态徽章同步
+    this.setData({
+      post: Object.assign({}, post, { status: 'ended', endTime: endTime }),
+      statusKey: 'ended',
+      statusText: POST_STATUS_MAP.ended,
+      isEnded: true
+    });
+
+    wx.showToast({ title: '已结束该寻呼', icon: 'none' });
+  },
+
+  /**
    * 举报：ActionSheet 选分类 -> Modal 填描述 -> 云函数 report
    * 云端写入 reports 集合，并把帖子 status 改成 auditing（大厅打码 + 不可点入）
    */

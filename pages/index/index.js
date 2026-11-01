@@ -1,5 +1,6 @@
 // pages/index/index.js
-// 大厅界面
+// 大厅界面：三个 Tab（最新发布 / 最热招募 / 往期历史）都是纯前端内存处理
+//   数据只拉一次（onShow 一次 + 下拉刷新一次），切 Tab 只做 filter + sort，不重新请求网络
 
 const store = require("../../utils/store");
 const guard = require("../../utils/guard");
@@ -7,16 +8,37 @@ const constants = require("../../utils/constants");
 
 const CATEGORY_MAP = constants.CATEGORY_MAP;
 const POST_STATUS_MAP = constants.POST_STATUS_MAP;
+const ACTIVE_POST_LIMIT_MESSAGE = constants.ACTIVE_POST_LIMIT_MESSAGE;
 
 // 审核中卡片的内容掩码
 const CONTENT_MASK = '*** *** ***';
 
+// 大厅 Tab（key 同时是 applyTab 的分支依据）
+const TABS = [
+  { key: 'latest', text: '最新发布' },
+  { key: 'hot', text: '最热招募' },
+  { key: 'history', text: '往期历史' }
+];
+
+// 每个 Tab 的空状态文案（往期历史为空和「大厅为空」不是一回事）
+const EMPTY_TEXT = {
+  latest: '大厅目前空空如也，点击右下角 + 号，发布第一条招募吧！',
+  hot: '暂时还没有招募热度，先去发一条吧！',
+  history: '还没有已结束的寻呼，结束后会自动归档到这里。'
+};
+
 Page({
   data: {
-    postList: [],
+    tabs: TABS,
+    activeTab: 'latest',   // 默认「最新发布」
+    postList: [],          // 当前 Tab 渲染的列表
+    emptyText: EMPTY_TEXT.latest,
     refreshing: false,
-    loaded: false // 云数据首次拉取是否完成（避免空状态误闪）
+    loaded: false          // 云数据首次拉取是否完成（避免空状态误闪）
   },
+
+  // 未进 data 的页面级字段：全部帖子的格式化结果（Tab 切换的唯一数据源）
+  postPool: [],
 
   onShow: function () {
     // Pull-based 刷新：只在 onShow 拉一次，不用任何定时轮询
@@ -36,17 +58,21 @@ Page({
     this.setData({ refreshing: false });
   },
 
-  // 先从云端刷缓存，再用同步方法渲染（渲染逻辑与本地版一致）
+  /**
+   * 全量拉取（唯一的网络请求点）：
+   * 先把云端刷进缓存 -> 一次性格式化成 postPool -> 再按当前 Tab 做内存筛选
+   */
   refreshList: async function () {
     try {
       await store.syncPosts();
-      this.setData({
-        postList: this.buildPostList(),
-        loaded: true
-      });
+      this.postPool = store.getPosts().map(item => this.formatPost(item));
+      this.setData({ loaded: true });
+      this.applyTab(this.data.activeTab);
     } catch (err) {
       console.error('[index] 云数据拉取失败：', err);
       this.setData({ loaded: true });
+      // 拉取失败也把现有缓存（可能为空）渲染出来，不要停在「加载中」
+      this.applyTab(this.data.activeTab);
       if (!this.hasShownLoadError) {
         this.hasShownLoadError = true;
         wx.showToast({ title: '云数据加载失败，请稍后重试', icon: 'none' });
@@ -54,9 +80,47 @@ Page({
     }
   },
 
-  // 云端缓存已排序，这里直接做字段格式化
-  buildPostList: function () {
-    return store.getPosts().map(item => this.formatPost(item));
+  /**
+   * 切换 Tab：纯内存 filter + sort，零网络请求
+   *   最新发布：status !== 'ended'，createTime 降序
+   *   最热招募：status !== 'ended'，heat 降序
+   *   往期历史：status === 'ended'，endTime 降序
+   */
+  applyTab: function (tabKey) {
+    const pool = this.postPool || [];
+    let list;
+
+    if (tabKey === 'history') {
+      list = pool
+        .filter(function (item) { return item.status === 'ended'; })
+        .sort(function (a, b) {
+          // 老数据可能没有 endTime（被举报后直接归档等），用 createTime 兜底
+          return (b.endTime || 0) - (a.endTime || 0) || (b.createTime || 0) - (a.createTime || 0);
+        });
+    } else if (tabKey === 'hot') {
+      list = pool
+        .filter(function (item) { return item.status !== 'ended'; })
+        .sort(function (a, b) {
+          return (b.heat || 0) - (a.heat || 0) || (b.createTime || 0) - (a.createTime || 0);
+        });
+    } else {
+      list = pool
+        .filter(function (item) { return item.status !== 'ended'; })
+        .sort(function (a, b) { return (b.createTime || 0) - (a.createTime || 0); });
+    }
+
+    this.setData({
+      activeTab: tabKey,
+      postList: list,
+      emptyText: EMPTY_TEXT[tabKey] || EMPTY_TEXT.latest
+    });
+  },
+
+  // Tab 点击：只改选中态 + 重算列表，不请求网络
+  onTabChange: function (e) {
+    const tab = e.currentTarget.dataset.tab;
+    if (!tab || tab === this.data.activeTab) return;
+    this.applyTab(tab);
   },
 
   /**
@@ -87,6 +151,7 @@ Page({
       statusText: POST_STATUS_MAP[status],
       heat: heat,
       createTime: raw.createTime || 0,
+      endTime: raw.endTime || 0, // 「往期历史」按它降序
       isAuditing: isAuditing
     };
   },
@@ -118,9 +183,34 @@ Page({
     });
   },
 
-  goToPublish: function () {
+  /**
+   * 发布入口（+ 号）
+   * 拦截顺序：登录/资料 -> 一人一帖（status === 'active' 的帖子只能有一条）
+   * 一人一帖判定优先读内存缓存；首次进入列表还没拉完（loaded=false）时补一次同步，避免误放行
+   */
+  goToPublish: async function () {
     // 与点卡片完全同一套拦截：未登录 / 资料未完善 都不得进入发布页
     if (!guard.ensureReady()) return;
+
+    let activeMine = store.findMyActivePost();
+    if (!activeMine && !this.data.loaded) {
+      try {
+        await store.syncPosts();
+      } catch (err) {
+        console.warn('[index] 发布前查重时拉取帖子失败，按「无 active 帖子」放行：', err);
+      }
+      activeMine = store.findMyActivePost();
+    }
+
+    if (activeMine) {
+      wx.showModal({
+        title: '暂时不能发布',
+        content: ACTIVE_POST_LIMIT_MESSAGE,
+        showCancel: false,
+        confirmText: '我知道了'
+      });
+      return;
+    }
 
     wx.navigateTo({
       url: '/pages/publish/publish'

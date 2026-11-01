@@ -1,69 +1,83 @@
 <!-- pages/index/index.wxml -->
 
-<!-- 这是一个可滚动的区域：自带下拉刷新（页面本体不滚动，所以用 scroll-view 的 refresher） -->
-<scroll-view class="scrollarea"
-             scroll-y
-             type="list"
-             refresher-enabled="{{true}}"
-             refresher-default-style="black"
-             refresher-triggered="{{refreshing}}"
-             bindrefresherrefresh="onRefresherRefresh">
-  <view class="container">
+<view class="hall">
 
-    <!-- 需求列表区域 -->
-    <view class="post-list">
+  <!-- 顶部 Tab：选中的高亮；切换只做内存 filter + sort，不重新请求网络 -->
+  <view class="tab-bar">
+    <view class="tab-item {{activeTab === item.key ? 'tab-item-active' : ''}}"
+          wx:for="{{tabs}}"
+          wx:for-item="item"
+          wx:key="key"
+          data-tab="{{item.key}}"
+          bindtap="onTabChange">{{item.text}}</view>
+  </view>
 
-      <!-- 首次拉云数据中：一行轻量提示，避免误显示空状态 -->
-      <view class="loading-text" wx:if="{{!loaded}}">正在加载最新寻呼…</view>
+  <!-- 这是一个可滚动的区域：自带下拉刷新（页面本体不滚动，所以用 scroll-view 的 refresher） -->
+  <scroll-view class="scrollarea"
+               scroll-y
+               type="list"
+               refresher-enabled="{{true}}"
+               refresher-default-style="black"
+               refresher-triggered="{{refreshing}}"
+               bindrefresherrefresh="onRefresherRefresh">
+    <view class="container">
 
-      <!-- 没有任何数据：灰色提示卡片 -->
-      <view class="empty-card" wx:elif="{{postList.length === 0}}">
-        <view class="empty-emoji">🗒️</view>
-        <view class="empty-text">大厅目前空空如也，点击右下角 + 号，发布第一条招募吧！</view>
+      <!-- 需求列表区域 -->
+      <view class="post-list">
+
+        <!-- 首次拉云数据中：一行轻量提示，避免误显示空状态 -->
+        <view class="loading-text" wx:if="{{!loaded}}">正在加载最新寻呼…</view>
+
+        <!-- 没有任何数据：灰色提示卡片（文案随 Tab 变化） -->
+        <view class="empty-card" wx:elif="{{postList.length === 0}}">
+          <view class="empty-emoji">🗒️</view>
+          <view class="empty-text">{{emptyText}}</view>
+        </view>
+
+        <!-- 正常列表：一打开就直接渲染卡片 -->
+        <block wx:else>
+          <!-- 单个卡片循环 -->
+          <view class="post-card"
+                wx:for="{{postList}}"
+                wx:key="id"
+                bindtap="goToDetail"
+                data-id="{{item.id}}"
+                data-status="{{item.status}}">
+
+            <!-- 标题行：分类标签 + 标题 + 状态标识（右上角） -->
+            <view class="post-header">
+              <view class="category-tag category-{{item.categoryKey}}">{{item.categoryText}}</view>
+              <text class="post-title">{{item.title}}</text>
+              <view wx:if="{{item.statusText}}" class="status-badge status-{{item.statusKey}}">{{item.statusText}}</view>
+            </view>
+
+            <!-- 描述文字：审核中显示掩码，正常显示正文（超过两行省略） -->
+            <view class="post-desc {{item.isAuditing ? 'post-desc-mask' : ''}}">{{item.contentText}}</view>
+
+            <!-- 技能标签行 -->
+            <view class="post-tags" wx:if="{{item.tags.length > 0}}">
+              <text class="tag" wx:for="{{item.tags}}" wx:for-item="tag" wx:key="*this">{{tag}}</text>
+            </view>
+
+            <!-- 底部：发起人 + 热度值 -->
+            <view class="post-footer">
+              <text class="author">发布人：{{item.authorName}}</text>
+              <view class="footer-right">
+                <text class="heat">🔥{{item.heat}}</text>
+                <text class="join-btn">了解详情</text>
+              </view>
+            </view>
+
+          </view>
+          <!-- 循环结束 -->
+        </block>
+
       </view>
 
-      <!-- 正常列表：一打开就直接渲染卡片 -->
-      <block wx:else>
-        <!-- 单个卡片循环 -->
-        <view class="post-card"
-              wx:for="{{postList}}"
-              wx:key="id"
-              bindtap="goToDetail"
-              data-id="{{item.id}}"
-              data-status="{{item.status}}">
-
-          <!-- 标题行：分类标签 + 标题 + 状态标识（右上角） -->
-          <view class="post-header">
-            <view class="category-tag category-{{item.categoryKey}}">{{item.categoryText}}</view>
-            <text class="post-title">{{item.title}}</text>
-            <view wx:if="{{item.statusText}}" class="status-badge status-{{item.statusKey}}">{{item.statusText}}</view>
-          </view>
-
-          <!-- 描述文字：审核中显示掩码，正常显示正文（超过两行省略） -->
-          <view class="post-desc {{item.isAuditing ? 'post-desc-mask' : ''}}">{{item.contentText}}</view>
-
-          <!-- 技能标签行 -->
-          <view class="post-tags" wx:if="{{item.tags.length > 0}}">
-            <text class="tag" wx:for="{{item.tags}}" wx:for-item="tag" wx:key="*this">{{tag}}</text>
-          </view>
-
-          <!-- 底部：发起人 + 热度值 -->
-          <view class="post-footer">
-            <text class="author">发布人：{{item.authorName}}</text>
-            <view class="footer-right">
-              <text class="heat">🔥{{item.heat}}</text>
-              <text class="join-btn">了解详情</text>
-            </view>
-          </view>
-
-        </view>
-        <!-- 循环结束 -->
-      </block>
-
     </view>
+  </scroll-view>
 
-  </view>
-</scroll-view>
+</view>
 
 <!-- “发布”悬浮按钮：固定定位（放弃拖动），只占据自身 100rpx 圆形区域，不拦截列表滑动与 TabBar 点击 -->
 <view class="fab-btn" hover-class="fab-btn-hover" catchtap="goToPublish">

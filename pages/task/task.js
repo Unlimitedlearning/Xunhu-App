@@ -1,6 +1,10 @@
 // pages/task/task.js
-// 任务页：申请流转工作台
+// 任务页：申请流转工作台 + 双向评价入口
 // 入口校验：未登录 / 资料未完善（昵称 + 联系方式）不展示申请列表，只给一个去完善的入口
+//
+// 评价规则（防互刷，真正拦截在云函数 review）：
+//   显示条件：申请 accepted **且** 关联帖子 ended（双方各只能对同一人保留一条评价）
+//   有旧评价 -> 弹窗回填 + 按钮/提交键都叫「更新评价」；无 -> 空白表单
 
 const store = require("../../utils/store");
 const guard = require("../../utils/guard");
@@ -16,7 +20,16 @@ Page({
     receivedList: [],
     ready: false,      // 已登录 + 资料完善：满足才渲染申请列表
     guardTitle: '',
-    guardTip: ''
+    guardTip: '',
+
+    // ---- 评价弹窗 ----
+    reviewMaxLength: constants.REVIEW_CONTENT_MAX, // 与云端 MAX_CONTENT、textarea maxlength 同一值
+    reviewModalShow: false,
+    reviewIsUpdate: false,                        // true = 回填旧数据，提交即覆盖更新
+    reviewTarget: { openid: '', name: '', postId: '' },
+    reviewRating: -1,                             // -1 未选（0 是「不满意」，不能用来表示未选）
+    reviewContent: '',
+    reviewSubmitting: false
   },
 
   onShow: function () {
@@ -67,7 +80,7 @@ Page({
   // 云端刷缓存 -> 同步渲染
   refreshList: async function () {
     try {
-      // 帖子缓存为空时补拉一次（任务页要用它显示帖子标题/发帖人）
+      // 帖子缓存为空时补拉一次（任务页要用它显示标题/发帖人，也要判断帖子是否已结束）
       if (!store.getPosts().length) await store.syncPosts();
       await store.syncApplications();
     } catch (err) {
@@ -77,6 +90,14 @@ Page({
         wx.showToast({ title: '申请数据加载失败，请稍后重试', icon: 'none' });
       }
     }
+
+    // 我已发出的评价：只用来标记「已评价 / 更新评价」，失败不影响申请列表本身
+    try {
+      await store.syncMyReviews();
+    } catch (err) {
+      console.warn('[task] 我的评价列表拉取失败，按钮先按「未评价」渲染：', err);
+    }
+
     this.renderList();
   },
 
@@ -121,6 +142,7 @@ Page({
 
     const status = app.status;
     const isAccepted = status === 'accepted';
+    const openid = store.getOpenId();
 
     let contact = '';
     let studentId = '';
@@ -131,6 +153,19 @@ Page({
       // 完整学号只在「已同意」后展示给发帖人（对方申请时自己填的），其余一律空
       studentId = type === 'received' ? (app.applicantStudentId || '') : '';
     }
+
+    // ---- 评价入口 ----
+    // sent：我申请了别人的帖子 -> 评价发帖人；received：我发的帖子 -> 评价申请人
+    const revieweeOpenid = type === 'sent'
+      ? (post ? (post.authorOpenid || '') : '')
+      : (app.applicantId || '');
+    const revieweeName = type === 'sent'
+      ? (post ? post.authorName : '')
+      : (app.applicantName || '对方');
+    const postEnded = !!(post && post.status === 'ended');
+    // 显示条件：accepted + 帖子 ended + 对方不是自己
+    const canReview = isAccepted && postEnded && !!revieweeOpenid && revieweeOpenid !== openid;
+    const myReview = canReview ? store.findMyReviewTo(revieweeOpenid) : null;
 
     return {
       id: app.id,
@@ -144,7 +179,14 @@ Page({
       isAccepted: isAccepted,
       contact: contact,
       studentId: studentId,
-      createTime: app.createTime || 0
+      createTime: app.createTime || 0,
+      // 评价相关
+      canReview: canReview,
+      postEnded: postEnded,
+      hasReviewed: !!myReview,
+      reviewBtnText: myReview ? '更新评价' : '评价对方',
+      revieweeOpenid: revieweeOpenid,
+      revieweeName: revieweeName || '对方'
     };
   },
 
@@ -174,5 +216,114 @@ Page({
     wx.navigateTo({
       url: '/pages/detail/detail?id=' + postId
     });
+  },
+
+  /* ---------------- 评价：打开弹窗（有旧评价就回填） ---------------- */
+  onReviewTap: async function (e) {
+    const dataset = e.currentTarget.dataset;
+    const revieweeOpenid = dataset.openid || '';
+    const revieweeName = dataset.name || '对方';
+    const postId = dataset.postid || '';
+
+    if (!revieweeOpenid) {
+      wx.showToast({ title: '找不到被评价人，请刷新后重试', icon: 'none' });
+      return;
+    }
+
+    // 1) 先看内存缓存（刚拉过 mine，命中就秒开）
+    let review = store.findMyReviewTo(revieweeOpenid);
+
+    // 2) 缓存没有：再向云端确认一次（查本地/云端是否存在旧评价）
+    if (!review) {
+      wx.showLoading({ title: '加载中...' });
+      try {
+        review = await store.fetchMyReviewTo(revieweeOpenid);
+      } catch (err) {
+        console.error('[task] 查询历史评价失败：', err);
+        // 查询失败不阻止用户写评价：按「没有旧评价」处理，提交时云端仍会 upsert
+      } finally {
+        wx.hideLoading();
+      }
+    }
+
+    this.setData({
+      reviewModalShow: true,
+      reviewIsUpdate: !!review,
+      reviewTarget: { openid: revieweeOpenid, name: revieweeName, postId: postId },
+      reviewRating: review ? review.rating : -1,
+      reviewContent: review ? review.content : ''
+    });
+  },
+
+  onReviewRatingTap: function (e) {
+    const rating = Number(e.currentTarget.dataset.rating);
+    if (rating !== 1 && rating !== 0) return;
+    this.setData({ reviewRating: rating });
+  },
+
+  onReviewContentInput: function (e) {
+    this.setData({ reviewContent: e.detail.value || '' });
+  },
+
+  closeReviewModal: function () {
+    if (this.data.reviewSubmitting) return; // 提交中不允许关闭，避免重复提交/闪回
+    this.setData({
+      reviewModalShow: false,
+      reviewIsUpdate: false,
+      reviewRating: -1,
+      reviewContent: '',
+      reviewTarget: { openid: '', name: '', postId: '' }
+    });
+  },
+
+  // 弹窗卡片自身吞掉点击，避免点内容区也关窗
+  noop: function () {},
+
+  /* ---------------- 评价：提交（云端 upsert，A 对 B 永远只有一条） ---------------- */
+  submitReview: async function () {
+    if (this.data.reviewSubmitting) return;
+
+    const rating = this.data.reviewRating;
+    if (rating !== 1 && rating !== 0) {
+      wx.showToast({ title: '请选择满意或不满意', icon: 'none' });
+      return;
+    }
+
+    const target = this.data.reviewTarget || {};
+    if (!target.openid) {
+      wx.showToast({ title: '缺少被评价人，请重新打开', icon: 'none' });
+      return;
+    }
+
+    const isUpdate = this.data.reviewIsUpdate;
+    this.setData({ reviewSubmitting: true });
+
+    try {
+      await store.submitReview({
+        postId: target.postId,
+        revieweeOpenid: target.openid,
+        rating: rating,
+        content: this.data.reviewContent
+      });
+
+      this.setData({
+        reviewSubmitting: false,
+        reviewModalShow: false,
+        reviewIsUpdate: false,
+        reviewRating: -1,
+        reviewContent: '',
+        reviewTarget: { openid: '', name: '', postId: '' }
+      });
+
+      this.renderList(); // 按钮立刻变成「更新评价」+ 已评价标记
+      wx.showToast({ title: isUpdate ? '评价已更新' : '评价已提交', icon: 'success' });
+    } catch (err) {
+      this.setData({ reviewSubmitting: false });
+      console.error('[task] 提交评价失败：', err);
+      wx.showToast({
+        title: (err && err.message) || '评价提交失败，请稍后重试',
+        icon: 'none'
+      });
+    }
   }
 });

@@ -5,7 +5,7 @@
 //   1) 读：先 await syncPosts() / syncApplications() 把云数据刷进缓存，再用同步的
 //      getPosts() / findPost() / getApplications() 渲染。这样页面只加一行 await，
 //      渲染逻辑（排序、兜底、掩码）完全不用改。
-//   2) 写：savePost / removePost / addApplication / updateApplicationStatus / persistHeat / submitReport
+//   2) 写：savePost / removePost / addApplication / updateApplicationStatus / persistHeat / submitReport / submitReview
 //      都返回 Promise，调用处必须 await。
 //   3) 热度：走云函数 heat 做原子自增（别人的帖子客户端没有写权限，必须走服务端）。
 //   4) 发布：走云函数 publish（内容安全机审 + status 直接 active，服务端定 status/authorName）；
@@ -37,6 +37,8 @@ const cache = {
   applicationsError: null, // 申请列表拉取失败时留个标记，任务页据此提示
   profile: null,           // 云端 users 文档（未完善或未拉到时为 null）
   profileLoaded: false,    // 本次会话是否已成功从云端拉过资料（失败/退出后置 false，重登录会重拉）
+  myReviews: [],           // 我发出的评价（reviews 中 reviewerOpenid === 我）：任务页标记「已评价」用
+  receivedReviews: null,   // 我收到的评价统计（total / goodCount / rate / list），个人页用
   openid: ''
 };
 
@@ -344,6 +346,26 @@ function findPost(postId) {
   }) || null;
 }
 
+/* ---------------- 一人一帖 ----------------
+   业务规则：同一用户同时只允许存在一条 status === 'active' 的帖子。
+   这里只查内存缓存（同步），页面点 + 号 / 发布时先用它做体验层拦截；
+   云函数 publish 里还有一道查重（ALREADY_HAS_ACTIVE），那才是改包也绕不过的防线。*/
+
+function findMyActivePost() {
+  const openid = cache.openid;
+  if (!openid) return null;
+  return cache.posts.find(function (item) {
+    return item.authorOpenid === openid && item.status === 'active';
+  }) || null;
+}
+
+// 异步版：先把云端帖子刷一遍再判定（发布页用，保证不是拿陈旧缓存下的结论）
+async function syncMyActivePost() {
+  await ensureInit();
+  await pullPosts();
+  return findMyActivePost();
+}
+
 async function syncPosts() {
   await ensureInit();
   return pullPosts();
@@ -387,6 +409,46 @@ async function removePost(postId) {
   await ensureInit();
   await col(COLLECTIONS.POSTS).doc(postId).remove();
   await pullPosts();
+}
+
+/**
+ * 结束自己的帖子：status -> 'ended' + 记录 endTime（结束时间）
+ * 为什么客户端直接写数据库就行：posts 权限是「所有用户可读，仅创建者可读写」，
+ * 云函数 publish 写入时已显式带上 _openid，所以只有发帖人本人能改自己这一条，改别人的会被安全规则拒绝。
+ * @return {number} endTime 时间戳
+ */
+async function endPost(postId) {
+  if (!postId) throw new Error('缺少帖子 ID');
+  await ensureInit();
+
+  const now = Date.now();
+  try {
+    await col(COLLECTIONS.POSTS).doc(postId).update({
+      data: { status: 'ended', endTime: now }
+    });
+  } catch (err) {
+    console.error('[store] 结束帖子失败 code=' + ((err && (err.errCode || err.code)) || '') + '：', err);
+    // 常见原因：不是本人发的（安全规则拒绝）、帖子已被删除、网络/环境异常
+    const wrapped = new Error('结束失败，请稍后重试');
+    wrapped.code = 'END_POST_FAILED';
+    wrapped.cause = err;
+    throw wrapped;
+  }
+
+  // 同步内存缓存：详情页返回大厅时（onShow 之前）也不会渲染成「寻呼中」
+  const cached = cache.posts.find(function (item) { return item.id === postId; });
+  if (cached) {
+    cached.status = 'ended';
+    cached.endTime = now;
+  }
+
+  try {
+    await pullPosts();
+  } catch (err) {
+    console.warn('[store] 结束后重新拉取帖子失败，已用本地缓存兜底：', err);
+  }
+
+  return now;
 }
 
 /* ---------------- 申请 applications ---------------- */
@@ -651,6 +713,153 @@ async function submitReport(report) {
   return result; // { ok, status, duplicate }
 }
 
+/* ---------------- 评价 reviews（云端集合，云函数 review 读写） ----------------
+   防刷规则完全在云端：A 对 B 只能有一条记录（不存在 add / 已存在 update 覆盖）。
+   客户端这边只负责：标记「我是否已经评价过 TA」、弹窗回填、把匿名评价交给个人页。
+   reviews 建议权限「所有用户不可读写」—— 客户端拿不到任何 review 文档，匿名性才可靠。*/
+
+function normalizeReview(doc) {
+  if (!doc) return null;
+  return {
+    reviewId: doc.reviewId || doc._id || '',
+    postId: doc.postId || '',
+    reviewerOpenid: doc.reviewerOpenid || '', // 收到的评价里云端不会下发这个字段
+    revieweeOpenid: doc.revieweeOpenid || '',
+    rating: doc.rating === 1 ? 1 : 0,
+    content: doc.content || '',
+    createTime: doc.createTime || 0
+  };
+}
+
+// 统一调用 review 云函数，把「函数未部署」「云端校验失败」都变成可捕获的错误
+async function callReviewFunction(data) {
+  let res;
+  try {
+    res = await wx.cloud.callFunction({ name: CLOUD_FUNCTIONS.REVIEW, data: data });
+  } catch (err) {
+    const wrapped = new Error('review 云函数调用失败，请确认已上传并部署');
+    wrapped.code = 'FUNCTION_CALL_FAILED';
+    wrapped.cause = err;
+    throw wrapped;
+  }
+
+  const result = (res && res.result) || {};
+  if (!result.ok) {
+    const err = new Error(result.message || '评价操作失败，请稍后重试');
+    err.code = result.code || 'REVIEW_FAILED';
+    throw err;
+  }
+  return result;
+}
+
+// 同步读：我已发出的评价（内存缓存）
+function getMyReviews() {
+  return cache.myReviews.slice();
+}
+
+// 同步读：我对某人的旧评价（有就说明按钮应该是「更新评价」）
+function findMyReviewTo(revieweeOpenid) {
+  if (!revieweeOpenid) return null;
+  return cache.myReviews.find(function (item) {
+    return item.revieweeOpenid === revieweeOpenid;
+  }) || null;
+}
+
+function mergeMyReview(review) {
+  if (!review) return;
+  const index = cache.myReviews.findIndex(function (item) {
+    return item.revieweeOpenid === review.revieweeOpenid;
+  });
+  if (index > -1) {
+    cache.myReviews[index] = review;
+  } else {
+    cache.myReviews.push(review);
+  }
+}
+
+async function pullMyReviews() {
+  const result = await callReviewFunction({ action: 'mine' });
+  cache.myReviews = (result.list || []).map(normalizeReview).filter(Boolean);
+  return cache.myReviews;
+}
+
+async function syncMyReviews() {
+  await ensureInit();
+  return pullMyReviews();
+}
+
+/**
+ * 单条查询：我对 TA 的旧评价（弹窗回填用）
+ * 先看页面拿到的缓存，缓存没有才向云端确认 —— 避免依赖陈旧缓存而重复新增
+ */
+async function fetchMyReviewTo(revieweeOpenid) {
+  if (!revieweeOpenid) return null;
+  await ensureInit();
+  const result = await callReviewFunction({ action: 'get', revieweeOpenid: revieweeOpenid });
+  const review = result.review ? normalizeReview(result.review) : null;
+
+  const index = cache.myReviews.findIndex(function (item) {
+    return item.revieweeOpenid === revieweeOpenid;
+  });
+  if (review) {
+    mergeMyReview(review);
+  } else if (index > -1) {
+    cache.myReviews.splice(index, 1); // 云端已经没有这条了，缓存也跟着清
+  }
+  return review;
+}
+
+/**
+ * 提交 / 更新评价（云端 upsert）
+ * @param {{postId:string, revieweeOpenid:string, rating:number, content:string}} input
+ */
+async function submitReview(input) {
+  const revieweeOpenid = (input && input.revieweeOpenid) || '';
+  if (!revieweeOpenid) throw new Error('缺少被评价人');
+
+  const rating = Number(input.rating);
+  if (rating !== 1 && rating !== 0) {
+    const err = new Error('请选择满意或不满意');
+    err.code = 'RATING_INVALID';
+    throw err;
+  }
+
+  await ensureInit();
+  const result = await callReviewFunction({
+    action: 'submit',
+    postId: (input.postId || '').trim(),
+    revieweeOpenid: revieweeOpenid,
+    rating: rating,
+    content: (input.content || '').trim().slice(0, constants.REVIEW_CONTENT_MAX)
+  });
+
+  const review = normalizeReview(result.review);
+  if (review) mergeMyReview(review);
+
+  return { review: review, created: !!result.created };
+}
+
+async function pullReceivedReviews() {
+  const result = await callReviewFunction({ action: 'received' });
+  cache.receivedReviews = {
+    total: result.total || 0,
+    goodCount: result.goodCount || 0,
+    rate: result.rate || 0,
+    list: (result.list || []).map(normalizeReview).filter(Boolean)
+  };
+  return cache.receivedReviews;
+}
+
+async function syncReceivedReviews() {
+  await ensureInit();
+  return pullReceivedReviews();
+}
+
+// 同步读：个人页满意度统计（没拉过时返回空统计，页面显示「满意度统计中...」）
+function getReceivedReviews() {
+  return cache.receivedReviews || { total: 0, goodCount: 0, rate: 0, list: [] };
+}
+
 /* ---------------- 登录态 ---------------- */
 
 function isLoggedIn() {
@@ -681,6 +890,8 @@ function logout() {
   setLoggedIn(false);
   cache.profile = null;        // 身份数据不留在内存
   cache.profileLoaded = false; // 下次登录重新从云端拉
+  cache.myReviews = [];        // 评价也属于个人数据，退出即清
+  cache.receivedReviews = null;
 }
 
 // openid 由 app.js 启动时预热，页面里同步取用
@@ -699,6 +910,9 @@ module.exports = {
   syncPosts,
   savePost,
   removePost,
+  endPost,
+  findMyActivePost,
+  syncMyActivePost,
   getDraft,
   saveDraft,
   removeDraft,
@@ -724,6 +938,15 @@ module.exports = {
   getNickname,
   isProfileReady,
   submitReport,
+
+  // reviews（双向评价，全部走云函数）
+  getMyReviews,
+  syncMyReviews,
+  findMyReviewTo,
+  fetchMyReviewTo,
+  submitReview,
+  syncReceivedReviews,
+  getReceivedReviews,
 
   // auth
   isLoggedIn,

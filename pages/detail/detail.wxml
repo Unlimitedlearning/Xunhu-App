@@ -52,7 +52,13 @@
 
 <!-- 底部操作区：举报（次要） + 主按钮 -->
 <view class="action-bar" wx:if="{{post && !notFound}}">
-  <text class="report-btn" catchtap="onReportClick">举报</text>
+  <!-- 左侧小字按钮：发帖人 -> 结束（已结束则置灰不可点）；其他人 -> 举报 -->
+  <block wx:if="{{isOwner}}">
+    <text class="report-btn report-btn-disabled" wx:if="{{isEnded}}">已结束</text>
+    <text class="report-btn report-btn-owner" wx:else catchtap="onEndClick">结束</text>
+  </block>
+  <text class="report-btn" wx:else catchtap="onReportClick">举报</text>
+
   <button wx:if="{{isOwner}}" class="action-btn btn-owner" bindtap="onActionClick">管理申请</button>
   <button wx:elif="{{isEnded}}" class="action-btn btn-ended" disabled="true">已结束</button>
   <button wx:elif="{{hasApplied}}" class="action-btn btn-applied" bindtap="onActionClick">{{appliedText}}</button>

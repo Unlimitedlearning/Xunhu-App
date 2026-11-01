@@ -4,9 +4,50 @@ page {
   background-color: #f5f6f8; /* 浅灰背景，降低视觉噪点 */
 }
 
-.scrollarea {
-  /* 占满视口高度（100vh 已扣除导航栏与 tabBar），避免底部被切断 */
+/* 大厅整体：固定 Tab 栏 + 下方滚动列表（纵向 flex） */
+.hall {
   height: 100vh;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+
+/* ---------- 顶部 Tab（最新发布 / 最热招募 / 往期历史） ---------- */
+.tab-bar {
+  flex-shrink: 0;
+  height: 96rpx;
+  box-sizing: border-box;
+  padding: 16rpx 20rpx;
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  background-color: #f5f6f8; /* 与页面底色一致，只靠选中态的白色胶囊分层 */
+}
+
+.tab-item {
+  flex: 1;
+  min-width: 0;
+  height: 64rpx;
+  line-height: 64rpx;
+  text-align: center;
+  font-size: 27rpx;
+  color: var(--color-sub, #8A8A8A);
+  border-radius: 12rpx;
+  white-space: nowrap;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+/* 选中态：白底胶囊 + 微信绿 + 加粗，一眼能看出当前在哪个 Tab */
+.tab-item-active {
+  background-color: #ffffff;
+  color: #07c160;
+  font-weight: bold;
+  box-shadow: 0 2rpx 8rpx rgba(0, 0, 0, 0.06);
+}
+
+.scrollarea {
+  /* 占满视口剩余高度（100vh 已扣除导航栏与 tabBar，再扣掉 96rpx 的 Tab 栏） */
+  height: calc(100vh - 96rpx);
   box-sizing: border-box;
 }
 

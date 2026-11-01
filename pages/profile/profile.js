@@ -1,15 +1,26 @@
 // pages/profile/profile.js
-// 个人页：登录（只确认 openid，不造身份） + 资料维护（云端 users 集合） + 收到的评价
+// 个人页：登录（只确认 openid，不造身份） + 资料维护（云端 users 集合） + 收到的评价（reviews 集合）
 //
 // 职责划分（重构后）：
 //   前端：展示与收集输入；登录态只记一个本地标记 isLogin
 //   云端：login 证明 openid；user 云函数读写 users 集合（昵称/学号/简历/联系方式）
-// 任何「默认姓名 / 默认学号 / 默认简历 / 默认微信号」都不再存在。
+//         review 云函数读 reviews 集合（我作为 revieweeOpenid 收到的评价，匿名下发）
+// 任何「默认姓名 / 默认学号 / 默认简历 / 默认微信号 / 假评价」都不再存在。
 
 const store = require("../../utils/store");
 const constants = require("../../utils/constants");
 
 const STUDENT_ID_REGEX = constants.STUDENT_ID_REGEX;
+
+// 时间戳 -> YYYY-MM-DD（个人页只展示日期，够用也不占宽度）
+function formatReviewTime(timestamp) {
+  const value = Number(timestamp) || 0;
+  if (!value) return '';
+  const date = new Date(value);
+  const month = date.getMonth() + 1;
+  const day = date.getDate();
+  return date.getFullYear() + '-' + (month < 10 ? '0' + month : month) + '-' + (day < 10 ? '0' + day : day);
+}
 
 Page({
   data: {
@@ -21,7 +32,16 @@ Page({
     resume: '',
     contact: '',
     isProfileReady: false, // 昵称 + 联系方式 + 广工学号格式均合格才为 true
-    reviews: []            // 暂无评价数据源（不再塞静态假评价）
+
+    // ---- 收到的评价（reviews 集合，全部匿名） ----
+    reviewTotal: 0,                        // 收到多少条评价（含没写文字的）
+    reviewGoodCount: 0,                    // 其中满意（rating = 1）的条数
+    reviewRate: 0,                         // 好评率百分比，由云端算好
+    showReviewRate: false,                 // 总数 >= 3 才展示好评率，否则只显示「满意度统计中...」
+    reviewPendingText: constants.REVIEW_PENDING_TEXT,
+    reviewMinCount: constants.REVIEW_MIN_COUNT,
+    reviewEmptyText: '还没有收到评价',
+    reviews: []                            // [{ id, fromName: '某同学', content, ratingText, isGood, createTime }]
   },
 
   onShow: function () {
@@ -42,6 +62,11 @@ Page({
         resume: '',
         contact: '',
         isProfileReady: false,
+        reviewTotal: 0,
+        reviewGoodCount: 0,
+        reviewRate: 0,
+        showReviewRate: false,
+        reviewEmptyText: '还没有收到评价',
         reviews: []
       });
       return;
@@ -65,8 +90,54 @@ Page({
       resume: profile.resume || '',
       contact: profile.contact || '',
       // 严格判定：昵称 + 联系方式 + 学号格式（与 guard / 发布 / 申请同一套规则）
-      isProfileReady: store.isProfileReady(),
-      reviews: []
+      isProfileReady: store.isProfileReady()
+    });
+
+    // 评价单独拉：reviews 拉取失败不影响资料表单可用
+    await this.loadReviews();
+  },
+
+  /**
+   * 拉取「我作为被评价人」的评价（云函数 review -> action: 'received'）
+   * 云端只回传 rating / content / createTime；评价人一律用「某同学」占位，真匿名
+   */
+  loadReviews: async function () {
+    try {
+      await store.syncReceivedReviews();
+    } catch (err) {
+      console.error('[profile] 评价拉取失败（review 云函数是否已部署？）：', err);
+    }
+    this.renderReviews();
+  },
+
+  renderReviews: function () {
+    const stat = store.getReceivedReviews();
+    const total = stat.total || 0;
+    // 展示规则：< 3 条只显示「满意度统计中...」；>= 3 条才给好评率
+    const showRate = total >= constants.REVIEW_MIN_COUNT;
+
+    const reviews = (stat.list || [])
+      .filter(function (item) {
+        return !!(item && item.content); // 只展示有文字的评价（纯打分不进列表）
+      })
+      .map(function (item) {
+        return {
+          id: item.reviewId || String(item.createTime || ''),
+          fromName: constants.REVIEW_ANONYMOUS_NAME,
+          content: item.content,
+          isGood: item.rating === 1,
+          ratingText: item.rating === 1 ? '满意' : '不满意',
+          createTime: formatReviewTime(item.createTime)
+        };
+      });
+
+    this.setData({
+      reviewTotal: total,
+      reviewGoodCount: stat.goodCount || 0,
+      reviewRate: stat.rate || 0,
+      showReviewRate: showRate,
+      reviewEmptyText: total > 0 ? '收到的评价暂未填写文字' : '还没有收到评价',
+      reviews: reviews
     });
   },
 
@@ -202,6 +273,18 @@ Page({
         });
       }
     }
+  },
+
+  /**
+   * 意见反馈与帮助：只弹管理邮箱（平台不收在线工单，避免造一个没人处理的入口）
+   */
+  onFeedbackTap: function () {
+    wx.showModal({
+      title: '意见反馈与帮助',
+      content: '如有任何问题或产品建议，请联系管理邮箱：xunhu_app@qq.com',
+      showCancel: false,
+      confirmText: '我知道了'
+    });
   },
 
   /**

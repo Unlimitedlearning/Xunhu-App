@@ -72,22 +72,39 @@
       <button class="save-btn" bindtap="saveProfile">保存资料</button>
     </view>
 
-    <!-- 收到的评价：暂无数据源（reviews 恒为空），不再塞静态演示评价 -->
+    <!-- 收到的评价：来自云端 reviews 集合（我作为被评价人），评价人一律匿名「某同学」 -->
     <view class="card">
-      <view class="section-title">收到的评价</view>
+      <view class="review-header">
+        <view class="section-title">收到的评价</view>
+        <!-- 总数 < 3：满意度统计中...；>= 3：好评率 xx% -->
+        <view class="review-rate" wx:if="{{showReviewRate}}">好评率 {{reviewRate}}%</view>
+        <view class="review-rate review-rate-pending" wx:else>{{reviewPendingText}}</view>
+      </view>
+      <view class="review-summary" wx:if="{{showReviewRate}}">
+        共 {{reviewTotal}} 条评价 · 满意 {{reviewGoodCount}} 条
+      </view>
       <view class="review-item" wx:for="{{reviews}}" wx:key="id">
         <view class="review-head">
           <text class="review-from">{{item.fromName}}</text>
           <text class="review-time">{{item.createTime}}</text>
         </view>
+        <view class="review-badge {{item.isGood ? 'review-badge-good' : 'review-badge-bad'}}">{{item.ratingText}}</view>
         <view class="review-content">{{item.content}}</view>
       </view>
-      <view class="empty-review" wx:if="{{reviews.length === 0}}">还没有收到评价</view>
+      <view class="empty-review" wx:if="{{reviews.length === 0}}">{{reviewEmptyText}}</view>
     </view>
 
     <view class="logout-btn" bindtap="handleLogout">退出登录</view>
 
   </block>
+
+  <!-- 底部菜单：意见反馈与帮助（未登录也可见，邮箱是唯一的对外反馈渠道） -->
+  <view class="menu-card">
+    <view class="menu-item" hover-class="menu-item-hover" hover-stay-time="80" bindtap="onFeedbackTap">
+      <text class="menu-label">意见反馈与帮助</text>
+      <text class="menu-arrow">›</text>
+    </view>
+  </view>
 
   <!-- 信任背书：协议 / 隐私指引入口（未登录也展示；显式绝对路径 + JS 兜底，保证可点击） -->
   <view class="agreement-links">

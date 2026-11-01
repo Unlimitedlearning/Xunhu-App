@@ -18,7 +18,8 @@ const COLLECTIONS = {
   POSTS: 'posts',
   APPLICATIONS: 'applications',
   USERS: 'users', // 用户资料：昵称 / 学号 / 简历 / 联系方式（一个 openid 一条）
-  REPORTS: 'reports' // 举报记录：postId / reporterOpenid / reason / desc / createTime（客户端不直接读写）
+  REPORTS: 'reports', // 举报记录：postId / reporterOpenid / reason / desc / createTime（客户端不直接读写）
+  REVIEWS: 'reviews' // 双向评价：reviewId / postId / reviewerOpenid / revieweeOpenid / rating / content / createTime（客户端不直接读写）
 };
 
 // 云函数名（cloudfunctions/ 目录下同名文件夹，需在工具里「上传并部署」）
@@ -28,7 +29,8 @@ const CLOUD_FUNCTIONS = {
   INIT_DB: 'initDb', // 建集合（云端才能 createCollection）
   HEAT: 'heat',     // 热度原子自增
   PUBLISH: 'publish', // 发布：内容安全机审 + 直接上线（status = active）
-  REPORT: 'report'  // 举报：写 reports + 帖子改 auditing
+  REPORT: 'report',  // 举报：写 reports + 帖子改 auditing
+  REVIEW: 'review'   // 评价：A 对 B 唯一记录（查重后 add / update），并回传匿名评价列表
 };
 
 // 分类：英文枚举 -> 中文
@@ -56,6 +58,28 @@ const POST_STATUS_MAP = {
 // 统一文案：机审拦截 / 举报后审查中（页面共用，避免文案各写一份）
 const CONTENT_RISKY_MESSAGE = '您发布的内容涉嫌违规，请修改后重试';
 const AUDITING_BLOCK_MESSAGE = '该内容涉嫌违规，正在审查中';
+
+// 一人一帖：同一用户同时只允许一条 active（寻呼中）的帖子。
+// 前端（大厅 + 号 / 发布页）只是体验层拦截，真正拦得住的是云函数 publish（ALREADY_HAS_ACTIVE）。
+const ACTIVE_POST_LIMIT_MESSAGE = '您已有一条寻呼中的信息，请先结束后再发布新信息。';
+
+/* ---------------- 双向评价（防互刷） -------------
+ * 集合 reviews：reviewId / postId / reviewerOpenid / revieweeOpenid / rating / content / createTime
+ * 核心规则（云端 cloudfunctions/review 唯一实现）：A 对 B 永远只有一条记录 ——
+ *   写入前先查 reviewerOpenid == A 且 revieweeOpenid == B：不存在 add，已存在 update
+ *   （rating / content / createTime / postId 全部覆盖成最新一次）。
+ * 建议权限：reviews 设「所有用户不可读写」，读写只走云函数 —— 评价人 openid 因此无法被前端拿到。
+ */
+const REVIEW_CONTENT_MAX = 50;          // 评价文本上限（WXML maxlength 也取这个值）
+const REVIEW_MIN_COUNT = 3;             // 收到评价少于 3 条时只显示「满意度统计中...」
+const REVIEW_PENDING_TEXT = '满意度统计中...';
+const REVIEW_ANONYMOUS_NAME = '某同学';  // 评价人一律匿名展示，不暴露昵称/openid
+
+// 评价选项：1 满意 / 0 不满意（rating 只允许这两个值，云端会再校验一次）
+const REVIEW_RATING_OPTIONS = [
+  { value: 1, text: '满意' },
+  { value: 0, text: '不满意' }
+];
 
 // 申请状态：pending 待处理 / accepted 已同意 / rejected 已拒绝
 const APPLICATION_STATUS_MAP = {
@@ -219,6 +243,12 @@ module.exports = {
   POST_STATUS_MAP,
   CONTENT_RISKY_MESSAGE,
   AUDITING_BLOCK_MESSAGE,
+  ACTIVE_POST_LIMIT_MESSAGE,
+  REVIEW_CONTENT_MAX,
+  REVIEW_MIN_COUNT,
+  REVIEW_PENDING_TEXT,
+  REVIEW_ANONYMOUS_NAME,
+  REVIEW_RATING_OPTIONS,
   APPLICATION_STATUS_MAP,
   AUTHOR_OPENID_MAP,
   // 违禁词库 + 净化匹配工具（前端 pages/publish 直接用，云函数里有一份同值副本）

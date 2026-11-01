@@ -178,6 +178,16 @@ page {
   padding: 0 24rpx 0 4rpx;
 }
 
+/* 发帖人的「结束」：保持小字低存在感，但比举报略深一点，表示可操作 */
+.report-btn-owner {
+  color: #8a8a8a;
+}
+
+/* 已结束：置灰且不可点（没有绑定任何事件） */
+.report-btn-disabled {
+  color: #d0d0d0;
+}
+
 .action-btn {
   flex: 1;
   min-width: 0;

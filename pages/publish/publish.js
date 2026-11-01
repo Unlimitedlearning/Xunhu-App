@@ -14,6 +14,8 @@ const constants = require("../../utils/constants");
 
 const CATEGORY_LIST = constants.CATEGORY_LIST;
 const CONTENT_RISKY_MESSAGE = constants.CONTENT_RISKY_MESSAGE;
+// 一人一帖文案（与云函数 publish 的 ALREADY_HAS_ACTIVE 提示保持一致）
+const ACTIVE_POST_LIMIT_MESSAGE = constants.ACTIVE_POST_LIMIT_MESSAGE;
 // 违禁词校验统一走 constants.checkTextViolation（净化匹配：小写 + 去空白 + 去全部标点 + 拼音兜底）
 const checkTextViolation = constants.checkTextViolation;
 
@@ -110,7 +112,7 @@ Page({
     this.setData({ focusField: '' });
   },
 
-  submitPost: function () {
+  submitPost: async function () {
     const title = (this.data.title || '').trim();
     const content = (this.data.content || '').trim();
     const contact = (this.data.contact || '').trim();
@@ -147,7 +149,25 @@ Page({
       return;
     }
 
-    // 4. 按 PRD 数据模型组装（status 不在这里定：云端通过才写 'active'）
+    // 4. 一人一帖：当前用户名下已有 status === 'active' 的帖子 -> 弹窗拦截
+    //    这里只是体验层（能改包绕过），云函数 publish 内还有一道查重做绝对防线
+    let activeMine = null;
+    try {
+      activeMine = await store.syncMyActivePost();
+    } catch (err) {
+      console.warn('[publish] 发布前查重失败，交由云端 publish 兜底：', err);
+    }
+    if (activeMine) {
+      wx.showModal({
+        title: '暂时不能发布',
+        content: ACTIVE_POST_LIMIT_MESSAGE,
+        showCancel: false,
+        confirmText: '我知道了'
+      });
+      return;
+    }
+
+    // 5. 按 PRD 数据模型组装（status 不在这里定：云端通过才写 'active'）
     const newPost = {
       category: category,
       title: title,
@@ -158,7 +178,7 @@ Page({
       createTime: Date.now()
     };
 
-    // 5. 上传（云函数 publish 内部再做一次严格校一遍，才是绝对防线）
+    // 6. 上传（云函数 publish 内部再做一次严格校一遍 + 一人一帖查重，才是绝对防线）
     this.uploadPost(newPost);
   },
 
@@ -182,7 +202,18 @@ Page({
       wx.hideLoading();
       console.error('[publish] 发布失败 code=' + (err && err.code) + '：', err);
 
-      // 1. 机审不通过：原地修改，不离开页面（云端标出了具体违规词就一并提示）
+      // 1. 一人一帖：云端查重命中（前端拦截可能被绕，这里才是真的拦住）
+      if (err && err.code === 'ALREADY_HAS_ACTIVE') {
+        wx.showModal({
+          title: '暂时不能发布',
+          content: err.message || ACTIVE_POST_LIMIT_MESSAGE,
+          showCancel: false,
+          confirmText: '我知道了'
+        });
+        return;
+      }
+
+      // 2. 违禁词 / 机审不通过：原地修改，不离开页面（云端标出了具体违规词就一并提示）
       if (err && err.code === 'CONTENT_RISKY') {
         wx.showModal({
           title: '内容未通过审核',
@@ -195,7 +226,7 @@ Page({
         return;
       }
 
-      // 2. 资料未完善（学号/昵称/联系方式云端没有）：引导去「我的」
+      // 3. 资料未完善（学号/昵称/联系方式云端没有）：引导去「我的」
       if (err && err.code === 'PROFILE_NOT_READY') {
         wx.showModal({
           title: '资料未完善',
@@ -208,7 +239,7 @@ Page({
         return;
       }
 
-      // 3. 其他（网络 / 云函数未部署 / 集合不存在）：存草稿，不让用户白写
+      // 4. 其他（网络 / 云函数未部署 / 集合不存在）：存草稿，不让用户白写
       store.saveDraft(Object.assign({}, postData, { status: 'draft' }));
       wx.showToast({ title: '发布失败，已存草稿', icon: 'none' });
       that.resetForm();

@@ -42,9 +42,21 @@
         </view>
       </view>
 
+      <!-- 评价入口：已同意 + 帖子已结束才出现；已评价过的按钮变「更新评价」 -->
+      <view class="review-row" wx:if="{{item.canReview}}">
+        <text class="review-tag" wx:if="{{item.hasReviewed}}">已评价</text>
+        <text class="review-tag review-tag-wait" wx:else>可评价对方</text>
+        <button class="mini-btn {{item.hasReviewed ? 'btn-review-done' : 'btn-review'}}"
+                data-openid="{{item.revieweeOpenid}}"
+                data-name="{{item.revieweeName}}"
+                data-postid="{{item.postId}}"
+                catchtap="onReviewTap">{{item.reviewBtnText}}</button>
+      </view>
+
       <view class="card-footer">
         <text class="tip-text" wx:if="{{item.status === 'pending'}}">发起人还在考虑，耐心等等～</text>
         <text class="tip-text" wx:elif="{{item.status === 'rejected'}}">很遗憾，这次没搭上</text>
+        <text class="tip-text" wx:elif="{{item.postEnded}}">该寻呼已结束，可以给对方评价了</text>
         <text class="tip-text" wx:else>申请已通过，快去联系发起人吧</text>
       </view>
     </view>
@@ -92,8 +104,20 @@
                 catchtap="handleApplication">同意</button>
       </view>
 
+      <!-- 评价入口：已同意 + 帖子已结束才出现；已评价过的按钮变「更新评价」 -->
+      <view class="review-row" wx:if="{{item.canReview}}">
+        <text class="review-tag" wx:if="{{item.hasReviewed}}">已评价</text>
+        <text class="review-tag review-tag-wait" wx:else>可评价对方</text>
+        <button class="mini-btn {{item.hasReviewed ? 'btn-review-done' : 'btn-review'}}"
+                data-openid="{{item.revieweeOpenid}}"
+                data-name="{{item.revieweeName}}"
+                data-postid="{{item.postId}}"
+                catchtap="onReviewTap">{{item.reviewBtnText}}</button>
+      </view>
+
       <view class="card-footer" wx:if="{{!item.isPending}}">
         <text class="tip-text" wx:if="{{item.status === 'rejected'}}">你已拒绝该申请</text>
+        <text class="tip-text" wx:elif="{{item.postEnded}}">该寻呼已结束，可以给申请人评价了</text>
         <text class="tip-text" wx:else>已同意，可联系申请人进一步沟通</text>
       </view>
     </view>
@@ -106,5 +130,42 @@
   </view>
 
   </block>
+
+  <!-- 评价弹窗：单选满意/不满意 + 最多 50 字；有旧评价时自动回填，按钮变「更新评价」 -->
+  <view class="review-mask" wx:if="{{reviewModalShow}}"
+        catchtouchmove="noop"
+        bindtap="closeReviewModal">
+    <view class="review-dialog" catchtap="noop">
+      <view class="review-dialog-title">{{reviewIsUpdate ? '更新评价' : '评价对方'}}</view>
+      <view class="review-dialog-sub">评价对象：{{reviewTarget.name}}</view>
+
+      <!-- 单选：满意 / 不满意（rating 1 / 0） -->
+      <view class="review-options">
+        <view class="review-option {{reviewRating === 1 ? 'review-option-good' : ''}}"
+              data-rating="1"
+              bindtap="onReviewRatingTap">👍 满意</view>
+        <view class="review-option {{reviewRating === 0 ? 'review-option-bad' : ''}}"
+              data-rating="0"
+              bindtap="onReviewRatingTap">👎 不满意</view>
+      </view>
+
+      <view class="review-textarea-wrap">
+        <textarea class="review-textarea"
+                  value="{{reviewContent}}"
+                  maxlength="{{reviewMaxLength}}"
+                  placeholder="说说这次合作的感受（选填）"
+                  bindinput="onReviewContentInput"></textarea>
+        <text class="review-counter">{{reviewContent.length}}/{{reviewMaxLength}}</text>
+      </view>
+
+      <view class="review-dialog-actions">
+        <button class="dialog-btn dialog-btn-cancel" catchtap="closeReviewModal">取消</button>
+        <button class="dialog-btn dialog-btn-ok"
+                loading="{{reviewSubmitting}}"
+                disabled="{{reviewSubmitting}}"
+                catchtap="submitReview">{{reviewIsUpdate ? '更新评价' : '提交评价'}}</button>
+      </view>
+    </view>
+  </view>
 
 </view>

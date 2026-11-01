@@ -1,4 +1,4 @@
-<!-- pages\index\index.wxml -->
+<!-- pages/index/index.wxml -->
 
 <movable-area class="movable-area">
   <!-- “发布”悬浮按钮 -->
@@ -10,34 +10,38 @@
 <!-- 这是一个可滚动的区域 -->
 <scroll-view class="scrollarea" scroll-y type="list">
   <view class="container">
-    
+
     <!-- 需求列表区域 -->
     <view class="post-list">
       <!-- 单个卡片循环 -->
-      <view class="post-card" 
-            wx:for="{{postList}}" 
-            wx:key="id" 
-            bindtap="goToDetail" 
+      <view class="post-card"
+            wx:for="{{postList}}"
+            wx:key="id"
+            bindtap="goToDetail"
             data-id="{{item.id}}">
-      
-        <!-- 标题行 -->
+
+        <!-- 标题行：分类标签 + 标题 + 状态标识（右上角） -->
         <view class="post-header">
-          <view class="category-tag category-{{item.PostCategory}}">{{item.CategoryText}}</view><!-- 分类标签 -->
+          <view class="category-tag category-{{item.categoryKey}}">{{item.categoryText}}</view>
           <text class="post-title">{{item.title}}</text>
+          <view wx:if="{{item.statusText}}" class="status-badge status-{{item.statusKey}}">{{item.statusText}}</view>
         </view>
-      
-        <!-- 描述文字 -->
-        <view class="post-desc">{{item.desc}}</view>
-      
+
+        <!-- 描述文字（超过两行省略） -->
+        <view class="post-desc">{{item.content}}</view>
+
         <!-- 技能标签行 -->
-        <view class="post-tags">
+        <view class="post-tags" wx:if="{{item.tags.length > 0}}">
           <text class="tag" wx:for="{{item.tags}}" wx:for-item="tag" wx:key="*this">{{tag}}</text>
         </view>
-      
-        <!-- 底部发布者信息 -->
+
+        <!-- 底部：发起人 + 热度值 -->
         <view class="post-footer">
-          <text class="author">发布人：{{item.author}}</text>
-          <text class="join-btn">了解详情</text>
+          <text class="author">发布人：{{item.authorName}}</text>
+          <view class="footer-right">
+            <text class="heat">🔥{{item.heat}}</text>
+            <text class="join-btn">了解详情</text>
+          </view>
         </view>
 
       </view>
@@ -46,4 +50,3 @@
 
   </view>
 </scroll-view>
-

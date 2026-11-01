@@ -2,3 +2,15 @@ node_modules/
 miniprogram_npm/
 project.private.config.json
 .DS_Store
+# Nanobot agent state and memory
+.nanobot/
+.cron/
+.prompts/
+.memory/
+cron/
+prompts/
+memory/
+AGENTS.md
+HEARTBEAT.md
+SOUL.md
+USER.md

@@ -1,13 +1,193 @@
 /* pages/task/task.wxss */
+page {
+  background-color: #f5f5f5;
+}
 
+.page-container {
+  min-height: 100vh;
+  padding: 20rpx;
+  padding-bottom: 60rpx;
+  box-sizing: border-box;
+}
+
+/* 顶部 Tab */
+.tab-bar {
+  display: flex;
+  align-items: center;
+  background-color: #ffffff;
+  border-radius: 16rpx;
+  padding: 8rpx;
+  margin-bottom: 20rpx;
+  box-shadow: 0 4rpx 12rpx rgba(0, 0, 0, 0.05);
+}
+
+.tab-item {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 76rpx;
+  font-size: 28rpx;
+  color: #666666;
+  border-radius: 12rpx;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.tab-active {
+  background-color: #07c160;
+  color: #ffffff;
+  font-weight: bold;
+}
+
+/* 申请卡片 */
+.app-card {
+  background-color: #ffffff;
+  border-radius: 16rpx;
+  padding: 24rpx;
+  margin-bottom: 20rpx;
+  box-shadow: 0 4rpx 12rpx rgba(0, 0, 0, 0.05);
+}
+
+.card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 16rpx;
+}
+
+.post-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 32rpx;
+  font-weight: bold;
+  color: #333333;
+  line-height: 1.4;
+  word-break: break-all;
+}
+
+/* 状态标识：防挤压 */
+.status-badge {
+  margin-left: 16rpx;
+  font-size: 22rpx;
+  font-weight: bold;
+  line-height: 1;
+  padding: 8rpx 14rpx;
+  border-radius: 6rpx;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.status-pending {
+  color: #fb8c00;
+  background-color: #fff3e0;
+}
+.status-accepted {
+  color: #07c160;
+  background-color: #e8f8ec;
+}
+.status-rejected {
+  color: #999999;
+  background-color: #f0f0f0;
+}
+
+.card-body {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16rpx;
+}
+
+.info-item {
+  font-size: 26rpx;
+  color: #999999;
+}
+
+/* 已同意的联系方式 */
+.contact-box {
+  display: flex;
+  align-items: center;
+  margin-top: 16rpx;
+  padding: 16rpx 20rpx;
+  background-color: #e8f8ec;
+  border-radius: 12rpx;
+}
+
+.contact-label {
+  font-size: 24rpx;
+  color: #07c160;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.contact-value {
+  font-size: 26rpx;
+  color: #07c160;
+  font-weight: bold;
+  margin-left: 16rpx;
+  word-break: break-all;
+}
+
+/* 底部提示 */
+.card-footer {
+  margin-top: 16rpx;
+}
+
+.tip-text {
+  font-size: 24rpx;
+  color: #bbbbbb;
+  line-height: 1.4;
+}
+
+/* 同意 / 拒绝按钮 */
+.action-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 20rpx;
+  margin-top: 20rpx;
+}
+
+.mini-btn {
+  margin: 0;
+  font-size: 26rpx;
+  line-height: 64rpx;
+  height: 64rpx;
+  padding: 0 40rpx;
+  border-radius: 32rpx;
+  font-weight: bold;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.btn-accept {
+  background-color: #07c160;
+  color: #ffffff;
+}
+
+.btn-reject {
+  background-color: #f5f5f5;
+  color: #666666;
+  border: 1rpx solid #e5e5e5;
+}
+
+/* 空状态 */
 .empty-state {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  height: 80vh;
-  color: #999;
+  height: 60vh;
+  color: #999999;
 }
-.icon { font-size: 100rpx; margin-bottom: 30rpx; }
-.text { font-size: 32rpx; color: #333; font-weight: bold; }
-.sub-text { font-size: 26rpx; margin-top: 10rpx; }
+.icon {
+  font-size: 100rpx;
+  margin-bottom: 30rpx;
+}
+.text {
+  font-size: 32rpx;
+  color: #333333;
+  font-weight: bold;
+}
+.sub-text {
+  font-size: 26rpx;
+  margin-top: 10rpx;
+}

@@ -1,13 +1,209 @@
 /* pages/detail/detail.wxss */
-
-.detail-container{
-  padding: 30rpx;
+page {
+  background-color: #f5f5f5;
 }
-.header{
-  font-size: 40rpx;
+
+.detail-container {
+  padding: 24rpx;
+  padding-bottom: 180rpx; /* 给底部操作栏留出空间 */
+  display: flex;
+  flex-direction: column;
+  gap: 20rpx;
+}
+
+/* 卡片 */
+.detail-card {
+  background-color: #ffffff;
+  border-radius: 16rpx;
+  padding: 30rpx;
+  box-shadow: 0 4rpx 12rpx rgba(0, 0, 0, 0.05);
+}
+
+/* 顶部：分类标签 + 状态标识 */
+.detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20rpx;
+}
+
+/* 分类标签：防挤压 */
+.category-tag {
+  font-size: 26rpx;
+  font-weight: bold;
+  padding: 6rpx 16rpx;
+  border-radius: 8rpx;
+  flex-shrink: 0;
+  white-space: nowrap;
+  line-height: 1.4;
+}
+.category-team {
+  background-color: #e6f0ff;
+  color: #1e88e5;
+}
+.category-resume {
+  background-color: #e8f8ec;
+  color: #07c160;
+}
+.category-partner {
+  background-color: #fff3e0;
+  color: #fb8c00;
+}
+.category-other {
+  background-color: #f0f0f0;
+  color: #999999;
+}
+
+/* 状态标识：防挤压 */
+.status-badge {
+  font-size: 22rpx;
+  font-weight: bold;
+  line-height: 1;
+  padding: 8rpx 14rpx;
+  border-radius: 6rpx;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.status-auditing {
+  color: #fb8c00;
+  background-color: #fff3e0;
+}
+.status-active {
+  color: #1e88e5;
+  background-color: #e6f0ff;
+}
+.status-ended {
+  color: #999999;
+  background-color: #f0f0f0;
+}
+
+/* 标题 */
+.detail-title {
+  font-size: 38rpx;
+  font-weight: bold;
+  color: #333333;
+  line-height: 1.4;
+  word-break: break-all;
+}
+
+/* 正文 */
+.detail-content {
+  font-size: 28rpx;
+  color: #555555;
+  line-height: 1.7;
+  margin-top: 20rpx;
+  word-break: break-all;
+}
+
+/* 标签组 */
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12rpx;
+  margin-top: 24rpx;
+}
+.tag {
+  font-size: 24rpx;
+  color: #07c160;
+  background-color: #e8f8ec;
+  padding: 6rpx 18rpx;
+  border-radius: 8rpx;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* 发起人 / 热度信息卡 */
+.meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14rpx 0;
+}
+.meta-row + .meta-row {
+  border-top: 1rpx solid #f2f2f2;
+}
+.meta-label {
+  font-size: 26rpx;
+  color: #999999;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.meta-value {
+  font-size: 28rpx;
+  color: #333333;
+  margin-left: 20rpx;
+  word-break: break-all;
+}
+.heat-value {
+  font-size: 28rpx;
+  font-weight: bold;
+  color: #ff6b35;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* 提示文案 */
+.tips {
+  font-size: 24rpx;
+  color: #999999;
+  line-height: 1.5;
+  padding: 0 10rpx;
+}
+
+/* 底部操作栏 */
+.action-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 20rpx 30rpx;
+  padding-bottom: calc(20rpx + env(safe-area-inset-bottom));
+  background-color: #ffffff;
+  box-shadow: 0 -4rpx 16rpx rgba(0, 0, 0, 0.06);
+  z-index: 10;
+}
+
+.action-btn {
+  width: 100%;
+  font-size: 32rpx;
+  font-weight: bold;
+  line-height: 88rpx;
+  height: 88rpx;
+  border-radius: 44rpx;
+  padding: 0;
+}
+.btn-apply {
+  background-color: #07c160;
+  color: #ffffff;
+}
+.btn-owner {
+  background-color: #1e88e5;
+  color: #ffffff;
+}
+.btn-applied {
+  background-color: #f0f0f0;
+  color: #999999;
+}
+
+/* 空状态 */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 70vh;
+  color: #999999;
+}
+.icon {
+  font-size: 100rpx;
+  margin-bottom: 30rpx;
+}
+.text {
+  font-size: 32rpx;
+  color: #333333;
   font-weight: bold;
 }
-.info{
-  margin-top: 20rpx;
-  color: #07c160;
+.sub-text {
+  font-size: 26rpx;
+  margin-top: 10rpx;
 }

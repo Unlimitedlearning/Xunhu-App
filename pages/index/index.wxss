@@ -6,12 +6,12 @@ page {
 
 .scrollarea {
   /* 使用 calc 计算高度，减去底部导航栏和悬浮按钮的空间 */
-  height: calc(100vh - 150rpx); 
+  height: calc(100vh - 150rpx);
 }
 
 .container {
   padding: 20rpx;
-  padding-bottom: 200rpx; /* 🌟 新增：给底部留出足够的安全距离 */
+  padding-bottom: 200rpx; /* 给底部留出足够的安全距离 */
   display: flex;
   flex-direction: column;
   gap: 20rpx; /* 卡片之间的间距 */
@@ -19,13 +19,12 @@ page {
 
 /* 卡片整体样式 */
 .post-card {
+  position: relative;
   background-color: #ffffff;
   border-radius: 16rpx;
   padding: 24rpx;
   box-shadow: 0 4rpx 12rpx rgba(0, 0, 0, 0.05); /* 微微的阴影 */
 }
-
-
 
 /* 描述 */
 .post-desc {
@@ -33,9 +32,20 @@ page {
   color: #666666;
   margin-top: 12rpx;
   line-height: 1.5;
+  /* 超过两行省略号 */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
 }
 
-
+/* 标签组 */
+.post-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12rpx;
+  margin-top: 16rpx;
+}
 
 /* 单个标签的样式 */
 .tag {
@@ -44,6 +54,8 @@ page {
   background-color: #e8f8ec;
   padding: 4rpx 16rpx;
   border-radius: 8rpx;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .post-header {
@@ -53,25 +65,74 @@ page {
 }
 
 .category-tag {
-  font-size: 22rpx;
+  font-size: 28rpx;
   padding: 4rpx 12rpx;
   border-radius: 6rpx;
   margin-right: 12rpx;
   font-weight: bold;
-  flex-shrink: 0; 
-  white-space: nowrap; 
-  height: 32rpx;        /* 🌟 给死高度 */
-  line-height: 32rpx;   /* 🌟 和高度一致，文字绝对居中 */
+  flex-shrink: 0;      /* 防挤压：不被标题压变形 */
+  white-space: nowrap; /* 防挤压：不换行 */
+  height: 32rpx;        /* 给死高度 */
+  line-height: 32rpx;   /* 和高度一致，文字绝对居中 */
   text-align: center;
+}
+/* 组队-蓝色 */
+.category-team {
+  background-color: #e6f0ff;
+  color: #1e88e5;
+}
+/* 自荐-绿色 */
+.category-resume {
+  background-color: #e8f8ec;
+  color: #07c160;
+}
+/* 搭子-橙色 */
+.category-partner {
+  background-color: #fff3e0;
+  color: #fb8c00;
+}
+/* 未知分类兜底 */
+.category-other {
+  background-color: #f0f0f0;
+  color: #999999;
 }
 
 .post-title {
   font-size: 34rpx;
   font-weight: bold;
   color: #333333;
-  flex: 1; 
+  flex: 1;
+  min-width: 0;         /* 允许标题收缩，配合标签 flex-shrink: 0 */
   line-height: 40rpx;   /* 给标题一个行高 */
-  word-break: break-all; 
+  word-break: break-all;
+}
+
+/* 状态标识（卡片右上角：审核中 / 已结束 / 待同步） */
+.status-badge {
+  flex-shrink: 0;      /* 防挤压 */
+  white-space: nowrap; /* 防挤压 */
+  font-size: 22rpx;
+  line-height: 1;
+  padding: 8rpx 12rpx;
+  border-radius: 6rpx;
+  margin-left: 12rpx;
+  margin-top: 2rpx;
+  font-weight: bold;
+}
+/* 审核中 - 橙色 */
+.status-auditing {
+  color: #fb8c00;
+  background-color: #fff3e0;
+}
+/* 已结束 - 灰色 */
+.status-ended {
+  color: #999999;
+  background-color: #f0f0f0;
+}
+/* 待同步（本地草稿） - 红色 */
+.status-draft {
+  color: #e53935;
+  background-color: #ffebee;
 }
 
 /* 底部区域 */
@@ -87,6 +148,27 @@ page {
 .author {
   font-size: 24rpx;
   color: #999999;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 底部右侧：热度值 + 了解详情 */
+.footer-right {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* 热度值 */
+.heat {
+  font-size: 24rpx;
+  font-weight: bold;
+  color: #ff6b35;
+  margin-right: 20rpx;
 }
 
 /* 了解详情按钮（目前只是文字） */
@@ -96,6 +178,8 @@ page {
   background-color: #07c160;
   padding: 8rpx 24rpx;
   border-radius: 30rpx;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 /* 拖拽区域 */

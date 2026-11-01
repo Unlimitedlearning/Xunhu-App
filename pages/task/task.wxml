@@ -1,7 +1,79 @@
 <!--pages/task/task.wxml-->
+<view class="page-container">
 
-<view class="empty-state">
-  <text class="icon">📭</text>
-  <view class="text">你还没有加入任何项目哦～</view>
-  <view class="sub-text">去“大厅”寻找志同道合的队友吧！</view>
+  <!-- 顶部 Tab -->
+  <view class="tab-bar">
+    <view class="tab-item {{activeTab === index ? 'tab-active' : ''}}"
+          wx:for="{{tabs}}"
+          wx:key="*this"
+          data-index="{{index}}"
+          bindtap="onTabChange">
+      <text>{{item}}</text>
+    </view>
+  </view>
+
+  <!-- Tab 1：我发出的申请 -->
+  <view class="list-wrap" wx:if="{{activeTab === 0}}">
+    <view class="app-card" wx:for="{{sentList}}" wx:key="id">
+      <view class="card-header" bindtap="goToDetail" data-postid="{{item.postId}}">
+        <text class="post-title">{{item.postTitle}}</text>
+        <view class="status-badge status-{{item.status}}">{{item.statusText}}</view>
+      </view>
+
+      <view class="card-body">
+        <text class="info-item">发帖人：{{item.authorName}}</text>
+      </view>
+
+      <!-- 已同意：展示发帖人联系方式 -->
+      <view class="contact-box" wx:if="{{item.contact}}">
+        <text class="contact-label">联系方式</text>
+        <text class="contact-value">{{item.contact}}</text>
+      </view>
+
+      <view class="card-footer">
+        <text class="tip-text" wx:if="{{item.status === 'pending'}}">发起人还在考虑，耐心等等～</text>
+        <text class="tip-text" wx:elif="{{item.status === 'rejected'}}">很遗憾，这次没搭上</text>
+        <text class="tip-text" wx:else>申请已通过，快去联系发起人吧</text>
+      </view>
+    </view>
+
+    <view class="empty-state" wx:if="{{sentList.length === 0}}">
+      <text class="icon">📤</text>
+      <view class="text">你还没有发出任何申请</view>
+      <view class="sub-text">去「大厅」寻找志同道合的队友吧！</view>
+    </view>
+  </view>
+
+  <!-- Tab 2：我收到的申请 -->
+  <view class="list-wrap" wx:else>
+    <view class="app-card" wx:for="{{receivedList}}" wx:key="id">
+      <view class="card-header" bindtap="goToDetail" data-postid="{{item.postId}}">
+        <text class="post-title">{{item.postTitle}}</text>
+        <view class="status-badge status-{{item.status}}">{{item.statusText}}</view>
+      </view>
+
+      <view class="card-body">
+        <text class="info-item">申请人：{{item.applicantName}}</text>
+      </view>
+
+      <!-- 待处理：提供同意 / 拒绝 -->
+      <view class="action-row" wx:if="{{item.isPending}}">
+        <button class="mini-btn btn-reject"
+                data-id="{{item.id}}"
+                data-action="rejected"
+                catchtap="handleApplication">拒绝</button>
+        <button class="mini-btn btn-accept"
+                data-id="{{item.id}}"
+                data-action="accepted"
+                catchtap="handleApplication">同意</button>
+      </view>
+    </view>
+
+    <view class="empty-state" wx:if="{{receivedList.length === 0}}">
+      <text class="icon">📭</text>
+      <view class="text">暂时还没有人申请你的寻呼</view>
+      <view class="sub-text">发布一条寻呼，让同学找到你</view>
+    </view>
+  </view>
+
 </view>

@@ -1,5 +1,55 @@
 <!--pages/detail/detail.wxml-->
-<view class="detail-container">
-  <view class="header">项目详情</view>
-  <view class="info">当前项目 ID: {{projectId}}</view>
+<view class="detail-container" wx:if="{{post && !notFound}}">
+
+  <!-- 主信息卡片 -->
+  <view class="detail-card">
+    <view class="detail-header">
+      <view class="category-tag category-{{categoryKey}}">{{categoryText}}</view>
+      <view wx:if="{{statusText}}" class="status-badge status-{{statusKey}}">{{statusText}}</view>
+    </view>
+
+    <view class="detail-title">{{post.title}}</view>
+
+    <view class="detail-content">{{post.content}}</view>
+
+    <!-- 标签组 -->
+    <view class="tag-list" wx:if="{{post.tags.length > 0}}">
+      <text class="tag" wx:for="{{post.tags}}" wx:for-item="tag" wx:key="*this">{{tag}}</text>
+    </view>
+  </view>
+
+  <!-- 发起人 + 热度 -->
+  <view class="detail-card meta-card">
+    <view class="meta-row">
+      <text class="meta-label">发起人</text>
+      <text class="meta-value">{{post.authorName}}</text>
+    </view>
+    <view class="meta-row">
+      <text class="meta-label">热度</text>
+      <text class="heat-value">🔥{{post.heat}}</text>
+    </view>
+    <view class="meta-row" wx:if="{{isOwner}}">
+      <text class="meta-label">联系方式</text>
+      <text class="meta-value">{{post.contact}}</text>
+    </view>
+  </view>
+
+  <view class="tips" wx:if="{{!isOwner}}">
+    申请通过后，即可在「任务」页看到发起人的联系方式
+  </view>
+
+</view>
+
+<!-- 兜底：帖子不存在 -->
+<view class="empty-state" wx:if="{{notFound}}">
+  <text class="icon">🔍</text>
+  <view class="text">这条寻呼已经不见了</view>
+  <view class="sub-text">可能已被发起人删除或结束</view>
+</view>
+
+<!-- 底部操作区 -->
+<view class="action-bar" wx:if="{{post && !notFound}}">
+  <button wx:if="{{isOwner}}" class="action-btn btn-owner" bindtap="onActionClick">管理申请</button>
+  <button wx:elif="{{hasApplied}}" class="action-btn btn-applied" bindtap="onActionClick">{{appliedText}}</button>
+  <button wx:else class="action-btn btn-apply" bindtap="onActionClick">申请加入</button>
 </view>

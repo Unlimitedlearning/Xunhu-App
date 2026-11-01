@@ -54,7 +54,10 @@ Page({
 
   /**
    * 组装申请卡片数据
-   * type = 'sent' 时，状态为 accepted 需要展示发帖人联系方式（PRD 5.4）
+   * 漏洞三：联系方式严格对等，只有 status === 'accepted' 才下发 contact 给 WXML
+   *   type = 'sent'     我发出的申请 -> accepted 才看得到发帖人 contact
+   *   type = 'received' 我收到的申请 -> accepted 才看得到申请人 contact
+   * pending / rejected 时 contact 一律为空，不往渲染层传
    */
   formatApplication: function (app, posts, type) {
     const post = posts.find(function (item) {
@@ -62,6 +65,14 @@ Page({
     }) || null;
 
     const status = app.status;
+    const isAccepted = status === 'accepted';
+
+    let contact = '';
+    if (isAccepted) {
+      contact = type === 'sent'
+        ? (post ? post.contact : '')
+        : (app.applicantContact || '');
+    }
 
     return {
       id: app.id,
@@ -72,7 +83,8 @@ Page({
       status: status,
       statusText: APPLICATION_STATUS_MAP[status] || '未知状态',
       isPending: status === 'pending',
-      contact: (type === 'sent' && status === 'accepted' && post) ? post.contact : '',
+      isAccepted: isAccepted,
+      contact: contact,
       createTime: app.createTime || 0
     };
   },

@@ -7,8 +7,14 @@
   </movable-view>
 </movable-area>
 
-<!-- 这是一个可滚动的区域 -->
-<scroll-view class="scrollarea" scroll-y type="list">
+<!-- 这是一个可滚动的区域：自带下拉刷新（页面本体不滚动，所以用 scroll-view 的 refresher） -->
+<scroll-view class="scrollarea"
+             scroll-y
+             type="list"
+             refresher-enabled="{{true}}"
+             refresher-default-style="black"
+             refresher-triggered="{{refreshing}}"
+             bindrefresherrefresh="onRefresherRefresh">
   <view class="container">
 
     <!-- 需求列表区域 -->

@@ -6,12 +6,7 @@ const constants = require("../../utils/constants");
 
 const CURRENT_USER = constants.CURRENT_USER;
 const STORAGE_KEYS = constants.STORAGE_KEYS;
-
-// 首次登录时的默认资料（纯前端模拟）
-const DEFAULT_PROFILE = {
-  resume: '熟悉 Vue 与微信小程序开发，做过两个校园项目，可负责前端页面与接口联调。',
-  contact: 'wxid_lin_video'
-};
+const DEFAULT_PROFILE = constants.DEFAULT_PROFILE;
 
 // 收到的评价（静态展示）
 const REVIEW_LIST = [

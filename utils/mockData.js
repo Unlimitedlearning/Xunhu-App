@@ -2,7 +2,7 @@
 // 寻呼 (Xunhu) 本地假数据
 // 字段严格遵循 PRD「四、核心数据模型」：
 //   posts        -> id / category / title / content / tags / authorName / contact / status / heat / createTime
-//   applications -> id / postId / applicantId / applicantName / receiverId / status / createTime
+//   applications -> id / postId / applicantId / applicantName / applicantContact / receiverId / status / createTime
 // 说明：本文件仅提供数据，不含任何页面逻辑。
 
 // 固定基准时间，保证每次运行 createTime 稳定可复现
@@ -93,6 +93,7 @@ const postList = [
  * 申请流转假数据（对应 applications 集合）
  * status 枚举：pending 待处理 / accepted 已同意 / rejected 已拒绝
  * 关联关系：postId -> postList[].id，receiverId 为对应帖子的发帖人
+ * applicantContact：申请人联系方式，仅 status === 'accepted' 后才对发帖人展示
  */
 const mockApplications = [
   {
@@ -100,6 +101,7 @@ const mockApplications = [
     postId: "1852052739",
     applicantId: "openid_mock_li",
     applicantName: "李同学",
+    applicantContact: "wxid_li_godot",
     receiverId: "openid_mock_zhang",
     status: "pending",
     createTime: BASE_TIME - 1 * HOUR
@@ -109,6 +111,7 @@ const mockApplications = [
     postId: "6204851739",
     applicantId: "openid_mock_lin",
     applicantName: "林同学",
+    applicantContact: "wxid_lin_video",
     receiverId: "openid_mock_chen",
     status: "accepted",
     createTime: BASE_TIME - 6 * HOUR
@@ -118,6 +121,7 @@ const mockApplications = [
     postId: "7392015486",
     applicantId: "openid_mock_huang",
     applicantName: "黄同学",
+    applicantContact: "wxid_huang_badm",
     receiverId: "openid_mock_wang",
     status: "rejected",
     createTime: BASE_TIME - 3 * HOUR
@@ -127,6 +131,7 @@ const mockApplications = [
     postId: "3187640925",
     applicantId: "openid_mock_zhang",
     applicantName: "张同学",
+    applicantContact: "wxid_zhang_xh",
     receiverId: "openid_mock_lin",
     status: "pending",
     createTime: BASE_TIME - 30 * 60 * 1000

@@ -24,8 +24,8 @@
         <text class="info-item">发帖人：{{item.authorName}}</text>
       </view>
 
-      <!-- 已同意：展示发帖人联系方式 -->
-      <view class="contact-box" wx:if="{{item.contact}}">
+      <!-- 已同意：才展示发帖人联系方式（pending / rejected 不渲染） -->
+      <view class="contact-box" wx:if="{{item.isAccepted && item.contact}}">
         <text class="contact-label">联系方式</text>
         <text class="contact-value">{{item.contact}}</text>
       </view>
@@ -56,6 +56,12 @@
         <text class="info-item">申请人：{{item.applicantName}}</text>
       </view>
 
+      <!-- 已同意：才展示申请人联系方式；pending 阶段绝对不能渲染 -->
+      <view class="contact-box" wx:if="{{item.isAccepted && item.contact}}">
+        <text class="contact-label">申请人联系方式</text>
+        <text class="contact-value">{{item.contact}}</text>
+      </view>
+
       <!-- 待处理：提供同意 / 拒绝 -->
       <view class="action-row" wx:if="{{item.isPending}}">
         <button class="mini-btn btn-reject"
@@ -66,6 +72,11 @@
                 data-id="{{item.id}}"
                 data-action="accepted"
                 catchtap="handleApplication">同意</button>
+      </view>
+
+      <view class="card-footer" wx:if="{{!item.isPending}}">
+        <text class="tip-text" wx:if="{{item.status === 'rejected'}}">你已拒绝该申请</text>
+        <text class="tip-text" wx:else>已同意，可联系申请人进一步沟通</text>
       </view>
     </view>
 

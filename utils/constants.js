@@ -61,9 +61,16 @@ const STORAGE_KEYS = {
   POSTS: 'local_posts',
   APPLICATIONS: 'local_applications',
   HEAT: 'local_heat_overrides',
+  HEAT_HISTORY: 'local_heat_history', // 热度防刷记录：openid + 帖子 id + 日期 + 动作
   IS_LOGIN: 'isLogin',
   PROFILE: 'local_profile',
   REPORTS: 'local_reports'
+};
+
+// 个人资料默认值（profile 页首次登录、申请时兜底联系方式）
+const DEFAULT_PROFILE = {
+  resume: '熟悉 Vue 与微信小程序开发，做过两个校园项目，可负责前端页面与接口联调。',
+  contact: 'wxid_lin_video'
 };
 
 module.exports = {
@@ -75,5 +82,6 @@ module.exports = {
   AUTHOR_OPENID_MAP,
   FORBIDDEN_WORDS,
   REPORT_CATEGORIES,
-  STORAGE_KEYS
+  STORAGE_KEYS,
+  DEFAULT_PROFILE
 };

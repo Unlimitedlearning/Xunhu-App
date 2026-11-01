@@ -34,7 +34,10 @@
     </view>
   </view>
 
-  <view class="tips" wx:if="{{!isOwner}}">
+  <view class="tips" wx:if="{{isEnded && !isOwner}}">
+    该招募已结束，无法再申请加入
+  </view>
+  <view class="tips" wx:elif="{{!isOwner}}">
     申请通过后，即可在「任务」页看到发起人的联系方式
   </view>
 
@@ -51,6 +54,7 @@
 <view class="action-bar" wx:if="{{post && !notFound}}">
   <text class="report-btn" catchtap="onReportClick">举报</text>
   <button wx:if="{{isOwner}}" class="action-btn btn-owner" bindtap="onActionClick">管理申请</button>
+  <button wx:elif="{{isEnded}}" class="action-btn btn-ended" disabled="true">已结束</button>
   <button wx:elif="{{hasApplied}}" class="action-btn btn-applied" bindtap="onActionClick">{{appliedText}}</button>
   <button wx:else class="action-btn btn-apply" bindtap="onActionClick">申请加入</button>
 </view>

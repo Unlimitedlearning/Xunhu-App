@@ -21,6 +21,7 @@ Page({
     statusKey: '',
     isOwner: false,
     hasApplied: false,
+    isEnded: false,
     appliedStatus: '',
     appliedText: '',
     notFound: false
@@ -47,9 +48,12 @@ Page({
       return;
     }
 
-    // PRD：进入详情页 heat +1（浏览记一次热度）
-    const heat = store.resolveHeat(post) + 1;
-    store.persistHeat(post.id, heat);
+    // 漏洞一：热度防刷。同一用户对同一帖子、同一天只计一次浏览热度
+    let heat = store.resolveHeat(post);
+    if (store.claimHeatOnce(post.id, CURRENT_USER.openid, store.HEAT_ACTION.VIEW)) {
+      heat += 1;
+      store.persistHeat(post.id, heat);
+    }
 
     // 是否已申请过（禁止重复申请）
     const myApplication = store.getApplications().find(function (app) {
@@ -75,6 +79,7 @@ Page({
       statusKey: post.status,
       isOwner: isOwner,
       hasApplied: hasApplied,
+      isEnded: post.status === 'ended',
       appliedStatus: appliedStatus,
       appliedText: appliedText,
       notFound: false
@@ -88,6 +93,12 @@ Page({
       wx.switchTab({
         url: '/pages/task/task'
       });
+      return;
+    }
+
+    // 漏洞二：已结束的帖子禁止申请
+    if (this.data.isEnded) {
+      wx.showToast({ title: '该招募已结束', icon: 'none' });
       return;
     }
 
@@ -110,21 +121,32 @@ Page({
     const post = this.data.post;
     if (!post) return;
 
-    // 1. 写入一条 pending 申请
+    // 漏洞二兜底：已结束的帖子不再接收新申请
+    if (post.status === 'ended') {
+      wx.showToast({ title: '该招募已结束', icon: 'none' });
+      return;
+    }
+
+    // 1. 写入一条 pending 申请（带上申请人联系方式，仅 accepted 后对发帖人可见）
+    const profile = store.getProfile();
     const newApplication = {
       id: 'app_' + Date.now(),
       postId: post.id,
       applicantId: CURRENT_USER.openid,
       applicantName: CURRENT_USER.name,
+      applicantContact: profile.contact || constants.DEFAULT_PROFILE.contact,
       receiverId: AUTHOR_OPENID_MAP[post.authorName] || 'openid_mock_unknown',
       status: 'pending',
       createTime: Date.now()
     };
     store.addApplication(newApplication);
 
-    // 2. 热度 +5
-    const heat = (post.heat || 0) + 5;
-    store.persistHeat(post.id, heat);
+    // 2. 热度 +5：漏洞一，同一用户对同一帖子只贡献一次申请热度
+    let heat = store.resolveHeat(post);
+    if (store.claimHeatOnce(post.id, CURRENT_USER.openid, store.HEAT_ACTION.APPLY)) {
+      heat += 5;
+      store.persistHeat(post.id, heat);
+    }
 
     this.setData({
       hasApplied: true,

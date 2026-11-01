@@ -12,12 +12,29 @@ const CONTENT_MASK = '*** *** ***';
 
 Page({
   data: {
-    postList: []
+    postList: [],
+    refreshing: false
   },
 
   onShow: function () {
-    // 从发布页 / 详情页返回时自动刷新
+    // 漏洞四：Pull-based 刷新——只在 onShow 拉一次，不用任何定时轮询
     this.refreshList();
+  },
+
+  // 用户主动下拉刷新（index.json 已开 enablePullDownRefresh）
+  onPullDownRefresh: function () {
+    this.refreshList();
+    wx.stopPullDownRefresh();
+  },
+
+  // scroll-view 自带的下拉刷新（大厅内容捧在 scroll-view 里，页面本体不滚动）
+  onRefresherRefresh: function () {
+    const that = this;
+    this.refreshList();
+    this.setData({ refreshing: true }, function () {
+      // 数据拉完立刻收起下拉动画（数据是本地同步读取，无需定时器）
+      that.setData({ refreshing: false });
+    });
   },
 
   refreshList: function () {

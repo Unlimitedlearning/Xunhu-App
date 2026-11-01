@@ -200,6 +200,15 @@ page {
   background-color: #f0f0f0;
   color: #999999;
 }
+/* 已结束：主按钮置灰不可点 */
+.btn-ended {
+  background-color: #f0f0f0 !important;
+  color: #bbbbbb !important;
+}
+.action-btn[disabled] {
+  background-color: #f0f0f0 !important;
+  color: #bbbbbb !important;
+}
 
 /* 空状态 */
 .empty-state {

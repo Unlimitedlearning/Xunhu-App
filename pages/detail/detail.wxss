@@ -64,6 +64,10 @@ page {
   flex-shrink: 0;
   white-space: nowrap;
 }
+.status-draft {
+  color: #e53935;
+  background-color: #ffebee;
+}
 .status-auditing {
   color: #fb8c00;
   background-color: #fff3e0;

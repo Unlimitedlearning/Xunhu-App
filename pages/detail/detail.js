@@ -18,6 +18,7 @@ const categoryMap = {
 
 // 状态字典
 const statusMap = {
+  'draft': '草稿',
   'auditing': '审核中',
   'active': '寻呼中',
   'ended': '已结束'

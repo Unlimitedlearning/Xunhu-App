@@ -1,37 +1,38 @@
 /*pages\index\index.wxss */
 page {
   height: 100vh;
-  background-color: #f5f5f5; /* 背景颜色 */
+  background-color: #f5f6f8; /* 浅灰背景，降低视觉噪点 */
 }
 
 .scrollarea {
-  /* 使用 calc 计算高度，减去底部导航栏和悬浮按钮的空间 */
-  height: calc(100vh - 150rpx);
+  /* 占满视口高度（100vh 已扣除导航栏与 tabBar），避免底部被切断 */
+  height: 100vh;
+  box-sizing: border-box;
 }
 
 .container {
   padding: 20rpx;
-  padding-bottom: 200rpx; /* 给底部留出足够的安全距离 */
+  padding-bottom: 250rpx; /* 保证最后一张卡片能完整滑到悬浮按钮上方 */
   display: flex;
   flex-direction: column;
   gap: 20rpx; /* 卡片之间的间距 */
 }
 
-/* 卡片整体样式 */
+/* 卡片整体样式：纯白 + 大圆角 + 极浅阴影 */
 .post-card {
   position: relative;
   background-color: #ffffff;
-  border-radius: 16rpx;
-  padding: 24rpx;
-  box-shadow: 0 4rpx 12rpx rgba(0, 0, 0, 0.05); /* 微微的阴影 */
+  border-radius: 24rpx;
+  padding: 32rpx;
+  box-shadow: 0 4rpx 16rpx rgba(0, 0, 0, 0.03);
 }
 
 /* 描述 */
 .post-desc {
   font-size: 28rpx;
   color: #666666;
-  margin-top: 12rpx;
-  line-height: 1.5;
+  margin-top: 16rpx;
+  line-height: 1.6;
   /* 超过两行省略号 */
   display: -webkit-box;
   -webkit-box-orient: vertical;
@@ -61,7 +62,7 @@ page {
 .post-header {
   display: flex;
   align-items: flex-start; /* 顶部对齐，防止高度拉扯 */
-  margin-bottom: 12rpx;
+  margin-bottom: 20rpx;
 }
 
 .category-tag {
@@ -107,7 +108,7 @@ page {
   word-break: break-all;
 }
 
-/* 状态标识（卡片右上角：审核中 / 已结束 / 待同步） */
+/* 状态标识（卡片右上角：草稿 / 审核中 / 已结束 / 寻呼中） */
 .status-badge {
   flex-shrink: 0;      /* 防挤压 */
   white-space: nowrap; /* 防挤压 */
@@ -129,10 +130,15 @@ page {
   color: #999999;
   background-color: #f0f0f0;
 }
-/* 待同步（本地草稿） - 红色 */
+/* 草稿（上传失败的本地数据） - 红色 */
 .status-draft {
   color: #e53935;
   background-color: #ffebee;
+}
+/* 寻呼中（正常在线） - 绿色 */
+.status-active {
+  color: #07c160;
+  background-color: #e8f8ec;
 }
 
 /* 底部区域 */

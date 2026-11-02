@@ -21,6 +21,8 @@
 //        （applicantContact / applicantStudentId 只在 accepted 时有值）
 //   { action: 'list' }
 //     -> { ok: true, sent: [...], received: [...] }  已联查 posts / users，字段见 handleList
+//        sent[].contact / sent[].authorStudentId：发帖人的联系方式 / 完整学号（仅 accepted）
+//        received[].applicantContact / applicantStudentId：申请人的联系方式 / 完整学号（仅 accepted）
 //
 // 隐私红线（与 store / task 页一致）：
 //   pending / rejected 的申请，**永远不下发**对方的联系方式与完整学号；
@@ -191,6 +193,11 @@ async function ensureCollection(db, name) {
 // 文档归属 openid（新文档 _openid，旧文档只有 openid 字段）
 function ownerOf(doc) {
   return String((doc && (doc._openid || doc.openid)) || '');
+}
+
+// 帖子作者 openid（新帖子 authorOpenid，历史帖子回退 _openid）
+function authorOf(post) {
+  return String((post && (post.authorOpenid || post._openid)) || '');
 }
 
 /* ---------------- 数据读取 ---------------- */
@@ -641,9 +648,12 @@ async function handleUpdateStatus(db, openid, event) {
 
 /* ---------------- list：我发出的 + 我收到的（联查 posts / users） ---------------- */
 
-function buildSentItem(app, postMap, contactMap) {
+function buildSentItem(app, postMap, contactMap, profileMap) {
   const post = postMap[app.postId] || null;
   const status = String(app.status || STATUS_PENDING);
+  const authorOpenid = authorOf(post) || String(app.receiverId || '');
+  // 发帖人资料（只用来取完整学号；昵称用帖子快照，联系方式走 post_contacts）
+  const authorProfile = (profileMap || {})[authorOpenid] || {};
 
   return {
     id: app._id,
@@ -654,7 +664,7 @@ function buildSentItem(app, postMap, contactMap) {
     applicantId: String(app.applicantId || app._openid || ''),
     receiverId: String(app.receiverId || ''),
     authorName: String((post && post.authorName) || ''),
-    authorOpenid: String((post && (post.authorOpenid || post._openid)) || ''),
+    authorOpenid: authorOpenid,
     applyNote: String(app.applyNote || ''),
     status: status,
     createTime: Number(app.createTime) || 0,
@@ -663,6 +673,11 @@ function buildSentItem(app, postMap, contactMap) {
     // 联系方式优先取 post_contacts（客户端读不到），老帖子未迁移时回退 post.contact
     contact: status === STATUS_ACCEPTED && post
       ? String(((contactMap || {})[app.postId]) || post.contact || '')
+      : '',
+    // 【学号对等】accepted 后申请人同样要看到发帖人的完整学号（现查 users，不落库、不写快照）；
+    // 发帖人账号没绑定学号（历史脏数据）时为空串，前端按空不渲染
+    authorStudentId: status === STATUS_ACCEPTED
+      ? String(authorProfile.studentId || '')
       : ''
   };
 }
@@ -725,9 +740,19 @@ async function handleList(db, openid) {
     return doc.postId;
   }));
 
+  // 联查 users 的对象有两类：
+  //   1) 我收到的申请 -> 申请人（昵称 / 简历 / 联系方式 / 完整学号）
+  //   2) 我发出的、已同意的申请 -> 发帖人（只为取完整学号，联系方式走 post_contacts）
+  // 【学号对等】漏掉第 2 类时，申请人一侧就永远只有联系方式、没有学号
+  const sentAcceptedAuthorIds = sentDocs
+    .filter(function (doc) { return String(doc.status || '') === STATUS_ACCEPTED; })
+    .map(function (doc) {
+      return authorOf(postMap[String(doc.postId || '')]) || String(doc.receiverId || '');
+    });
+
   const profileMap = await loadProfiles(db, receivedDocs.map(function (doc) {
     return doc.applicantId || doc._openid;
-  }));
+  }).concat(sentAcceptedAuthorIds));
 
   // 发帖人联系方式（post_contacts）：只为「我发出的、已同意」的帖子读，别的一律不碰
   const acceptedPostIds = sentDocs
@@ -736,7 +761,7 @@ async function handleList(db, openid) {
   const contactMap = await loadContacts(db, acceptedPostIds);
 
   const sent = sentDocs
-    .map(function (doc) { return buildSentItem(doc, postMap, contactMap); })
+    .map(function (doc) { return buildSentItem(doc, postMap, contactMap, profileMap); })
     .sort(function (a, b) { return b.createTime - a.createTime; });
 
   const received = receivedDocs

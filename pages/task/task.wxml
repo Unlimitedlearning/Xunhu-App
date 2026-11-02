@@ -48,11 +48,15 @@
         <view class="note-text">{{item.applyNote}}</view>
       </view>
 
-      <!-- 已同意：才展示发帖人联系方式（pending / rejected 不渲染） -->
-      <view class="contact-box" wx:if="{{item.isAccepted && item.contact}}">
-        <view class="contact-line">
+      <!-- 已同意：才展示发帖人联系方式与完整学号（pending / rejected 不渲染；学号对等展示） -->
+      <view class="contact-box" wx:if="{{item.isAccepted && (item.contact || item.studentId)}}">
+        <view class="contact-line" wx:if="{{item.contact}}">
           <text class="contact-label">联系方式</text>
           <text class="contact-value">{{item.contact}}</text>
+        </view>
+        <view class="contact-line" wx:if="{{item.studentId}}">
+          <text class="contact-label">发帖人学号</text>
+          <text class="contact-value">{{item.studentId}}</text>
         </view>
       </view>
 

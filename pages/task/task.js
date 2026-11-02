@@ -228,9 +228,9 @@ Page({
    * 云端已经联查了 posts（标题 / 状态 / 发帖人 / 联系方式）与 users（申请人昵称 / 简历），
    * 内存里的帖子缓存只做兜底（云函数降级模式下用）。
    *
-   * 隐私红线：联系方式严格对等，只有 status === 'accepted' 才下发 contact / studentId 给 WXML
-   *   type = 'sent'     我发出的申请 -> accepted 才看得到发帖人 contact
-   *   type = 'received' 我收到的申请 -> accepted 才看得到申请人 contact 与完整学号
+   * 隐私红线：联系方式与学号严格对等，只有 status === 'accepted' 才下发 contact / studentId 给 WXML
+   *   type = 'sent'     我发出的申请 -> accepted 才看得到发帖人 contact 与完整学号（app.authorStudentId）
+   *   type = 'received' 我收到的申请 -> accepted 才看得到申请人 contact 与完整学号（app.applicantStudentId）
    * pending / rejected 时一律为空，不往渲染层传（避免无权限的人从渲染层挖学号）
    */
   formatApplication: function (app, posts, type) {
@@ -250,11 +250,15 @@ Page({
     let contact = '';
     let studentId = '';
     if (isAccepted) {
-      contact = type === 'sent'
-        ? (app.contact || (post ? post.contact : '') || '')
-        : (app.applicantContact || '');
-      // 完整学号只在「已同意」后展示给发帖人（对方申请时自己填的），其余一律空
-      studentId = type === 'received' ? (app.applicantStudentId || '') : '';
+      if (type === 'sent') {
+        // 我发出的申请：发帖人联系方式（post_contacts）+ 发帖人完整学号（云端现查 users）
+        contact = app.contact || (post ? post.contact : '') || '';
+        studentId = app.authorStudentId || '';
+      } else {
+        // 我收到的申请：申请人联系方式 + 申请人完整学号
+        contact = app.applicantContact || '';
+        studentId = app.applicantStudentId || '';
+      }
     }
 
     // ---- 申请人信息（发帖人判断要不要同意的唯一依据）----

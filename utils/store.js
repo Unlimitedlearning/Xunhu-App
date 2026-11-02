@@ -142,6 +142,75 @@ function normalizeApplication(doc) {
   });
 }
 
+/* ---------------- 本地快照（缓存先行 / 秒开） ----------------
+ * 为什么要有：冷启动时页面 onShow 先同步读 Storage 渲染，再去云端拉最新数据 —— 不用盯白屏。
+ * 约定：
+ *   写：只在 pullPosts / pullApplications 成功后落盘（云端是唯一真相，本地只是快照）
+ *   读：hydrateFromCache() 把快照灌回内存缓存（仅当内存为空），页面继续用 getPosts() / getApplications()
+ *   下拉刷新：一律直接走 syncPosts() / syncApplications()，不读快照（用户主动要最新数据）
+ *   隐私：帖子是公开数据；申请本来只拉到自己相关的记录，且退出登录时会清掉
+ */
+
+function readSnapshot(key) {
+  try {
+    const data = wx.getStorageSync(key);
+    if (!data || !Array.isArray(data.list)) return null;
+    return data;
+  } catch (err) {
+    console.warn('[store] 读取本地快照失败 key=' + key + '：', err);
+    return null;
+  }
+}
+
+function writeSnapshot(key, list) {
+  try {
+    wx.setStorageSync(key, { updateTime: Date.now(), list: list });
+  } catch (err) {
+    // 超出 Storage 上限 / 序列化失败：快照只是体验优化，写不进去不影响主流程
+    console.warn('[store] 写本地快照失败 key=' + key + '：', err);
+  }
+}
+
+function clearSnapshot(key) {
+  try {
+    wx.removeStorageSync(key);
+  } catch (err) {
+    console.warn('[store] 清理本地快照失败 key=' + key + '：', err);
+  }
+}
+
+/**
+ * 缓存先行：把本地快照灌回内存缓存（只在内存为空时灌，不覆盖已经拉到的云数据）
+ * 页面用法：store.hydrateFromCache() -> 同步读 store.getPosts() / getApplications() -> setData
+ * @return {{posts: number, applications: number}} 本次实际灌入的条数（0 表示没快照）
+ */
+function hydrateFromCache() {
+  let posts = 0;
+  let applications = 0;
+
+  if (!cache.posts.length) {
+    const snapshot = readSnapshot(STORAGE_KEYS.CACHE_POSTS);
+    if (snapshot) {
+      cache.posts = snapshot.list
+        .map(normalizePost)
+        .sort(function (a, b) { return (b.createTime || 0) - (a.createTime || 0); });
+      posts = cache.posts.length;
+    }
+  }
+
+  if (!cache.applications.length) {
+    const snapshot = readSnapshot(STORAGE_KEYS.CACHE_APPLICATIONS);
+    if (snapshot) {
+      cache.applications = snapshot.list
+        .map(normalizeApplication)
+        .sort(function (a, b) { return (b.createTime || 0) - (a.createTime || 0); });
+      applications = cache.applications.length;
+    }
+  }
+
+  return { posts: posts, applications: applications };
+}
+
 /* ---------------- 初始化 ---------------- */
 
 // 只拉数据、不触发 ensureInit，避免与 doInit 互相递归
@@ -151,6 +220,7 @@ async function pullPosts() {
     cache.posts = rows
       .map(normalizePost)
       .sort(function (a, b) { return (b.createTime || 0) - (a.createTime || 0); });
+    writeSnapshot(STORAGE_KEYS.CACHE_POSTS, cache.posts); // 缓存先行：落盘快照，下次冷启动秒开
     return cache.posts;
   } catch (err) {
     reportFetchError(COLLECTIONS.POSTS, err);
@@ -184,6 +254,7 @@ async function pullApplications() {
       .map(normalizeApplication)
       .sort(function (a, b) { return (b.createTime || 0) - (a.createTime || 0); });
     cache.applicationsError = null;
+    writeSnapshot(STORAGE_KEYS.CACHE_APPLICATIONS, cache.applications); // 缓存先行：落盘快照
     return cache.applications;
   } catch (err) {
     reportFetchError(COLLECTIONS.APPLICATIONS, err);
@@ -467,7 +538,7 @@ async function endPost(postId) {
     throw wrapped;
   }
 
-  // 同步内存缓存：详情页返回大厅时（onShow 之前）也不会渲染成「寻呼中」
+  // 同步内存缓存：详情页返回大厅时（onShow 之前）也不会渲染成「进行中」
   const cached = cache.posts.find(function (item) { return item.id === postId; });
   if (cached) {
     cached.status = 'ended';
@@ -1021,6 +1092,8 @@ function logout() {
   cache.profileLoaded = false; // 下次登录重新从云端拉
   cache.myReviews = [];        // 评价也属于个人数据，退出即清
   cache.receivedReviews = null;
+  cache.applications = [];     // 申请含联系方式 / 学号，退出即清（含本地快照）
+  clearSnapshot(STORAGE_KEYS.CACHE_APPLICATIONS);
 }
 
 // openid 由 app.js 启动时预热，页面里同步取用
@@ -1032,6 +1105,7 @@ module.exports = {
   init,
   getState,
   getOpenId,
+  hydrateFromCache,
 
   // posts
   getPosts,

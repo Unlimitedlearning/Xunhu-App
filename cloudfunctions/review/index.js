@@ -25,6 +25,10 @@ cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 const REVIEWS = 'reviews';
 const APPLICATIONS = 'applications';
 const POSTS = 'posts';
+const USERS = 'users';
+
+// 账号被封禁（users.role === 'banned'）时的统一文案，与 cloudfunctions/publish 同值
+const BANNED_MESSAGE = '您的账号因违规已被限制使用';
 
 // 与小程序端 utils/constants.js 的 REVIEW_CONTENT_MAX 保持一致
 const MAX_CONTENT = 50;
@@ -148,6 +152,27 @@ function errCodeOf(err) {
   return String((err && (err.errCode || err.code)) || '');
 }
 
+/**
+ * 查当前用户的账号状态（v1.1.0 角色底座）
+ * 兼容两种历史写法：_openid（新文档）/ openid（旧文档只有普通字段）
+ * 查不到文档、集合不存在、查询报错一律当「普通用户」，不能让风控查询失败卡死正常用户
+ * @return {Promise<boolean>} true = 已被封禁
+ */
+async function isBanned(db, openid) {
+  const conditions = [{ _openid: openid }, { openid: openid }];
+  for (let i = 0; i < conditions.length; i++) {
+    try {
+      const res = await db.collection(USERS).where(conditions[i]).limit(1).get();
+      const doc = ((res && res.data) || [])[0];
+      if (doc) return String(doc.role || 'user').toLowerCase() === 'banned';
+    } catch (err) {
+      console.warn('[review] 读取 users 角色失败，按普通用户放行：', err && err.message);
+      return false;
+    }
+  }
+  return false;
+}
+
 function isMissingCollection(err) {
   const code = errCodeOf(err);
   const message = String((err && err.message) || '');
@@ -217,7 +242,14 @@ async function handleSubmit(db, openid, payload) {
     return { ok: false, code: 'POST_ID_REQUIRED', message: '缺少帖子 ID' };
   }
 
-  // 0. 违禁词校验：放在所有 DB 查询之前（便宜的纯内存判断，命中直接拒，不浪费一次读）
+  // 0. 账号状态（v1.1.0 角色底座）：被封禁的账号不得写入任何评价。
+  //    role 只能由服务端/控制台维护（cloudfunctions/user 不允许客户端写 role），改包也绕不过。
+  if (await isBanned(db, openid)) {
+    console.log('[review] 账号已被封禁，拦截评价：', openid);
+    return { ok: false, code: 'ACCOUNT_BANNED', message: BANNED_MESSAGE };
+  }
+
+  // 0.1 违禁词校验：放在所有 DB 查询之前（便宜的纯内存判断，命中直接拒，不浪费一次读）
   //    评价正文是黑产引流重灾区（「加 V 代写」「日结 私聊」），不能只靠发帖那层过滤
   const violation = checkTextViolation(rawContent);
   if (!violation.pass) {
@@ -236,7 +268,7 @@ async function handleSubmit(db, openid, payload) {
     return { ok: false, code: errCodeOf(err) || 'RELATION_CHECK_FAILED', message: '申请关系校验失败，请稍后重试' };
   }
   if (!application) {
-    return { ok: false, code: 'RELATION_REQUIRED', message: '你们还没有在这次寻呼中达成合作，无法评价' };
+    return { ok: false, code: 'RELATION_REQUIRED', message: '你们还没有就这条信息达成合作，无法评价' };
   }
 
   // 2. 帖子必须已结束（与任务页「结束才出现评价按钮」同一判定）
@@ -252,7 +284,7 @@ async function handleSubmit(db, openid, payload) {
   }
   // DEV_TEST：临时允许「帖子未结束」也能评价（原校验见下方 if 块，恢复时把 !DEV_ALLOW_SELF_REVIEW 去掉即可）
   if (!DEV_ALLOW_SELF_REVIEW && String(post.status || '') !== 'ended') {
-    return { ok: false, code: 'POST_NOT_ENDED', message: '该寻呼还未结束，结束后才能评价' };
+    return { ok: false, code: 'POST_NOT_ENDED', message: '该信息还未结束，结束后才能评价' };
   }
 
   // reviewId 用「评价人_被评价人」拼出来：天然唯一、更新后也不变

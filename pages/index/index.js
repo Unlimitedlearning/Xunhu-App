@@ -24,7 +24,7 @@ const TABS = [
 const EMPTY_TEXT = {
   latest: '大厅目前空空如也，点击右下角 + 号，发布第一条招募吧！',
   hot: '暂时还没有招募热度，先去发一条吧！',
-  history: '还没有已结束的寻呼，结束后会自动归档到这里。'
+  history: '还没有已结束的信息，结束后会自动归档到这里。'
 };
 
 Page({
@@ -41,17 +41,34 @@ Page({
   postPool: [],
 
   onShow: function () {
-    // Pull-based 刷新：只在 onShow 拉一次，不用任何定时轮询
+    // 1) 缓存先行（秒开）：同步读本地快照 -> setData，第一帧就有内容，不白屏
+    this.renderCachedList();
+    // 2) 再静默拉云端：拿到新数据后覆盖快照并重新渲染（失败也不影响上面已渲染的缓存）
     this.refreshList();
   },
 
-  // 用户主动下拉刷新（index.json 已开 enablePullDownRefresh）
+  /**
+   * 缓存先行：本地快照 -> postPool -> 立即渲染（幂等，只在会话内首次执行）
+   * 为什么不能每次 onShow 都用快照：从详情页返回时屏幕上已经是新数据，用快照反而会闪一下旧状态
+   */
+  renderCachedList: function () {
+    if (this.postPool && this.postPool.length) return;
+
+    const cached = store.hydrateFromCache();
+    if (!cached.posts) return; // 首次安装 / 清理过缓存：等 refreshList 吧
+
+    this.postPool = store.getPosts().map(item => this.formatPost(item));
+    this.setData({ loaded: true });
+    this.applyTab(this.data.activeTab);
+  },
+
+  // 用户主动下拉刷新（index.json 已开 enablePullDownRefresh）：跳过缓存，直接拉云端
   onPullDownRefresh: async function () {
     await this.refreshList();
     wx.stopPullDownRefresh();
   },
 
-  // scroll-view 自带的下拉刷新（大厅内容捧在 scroll-view 里，页面本体不滚动）
+  // scroll-view 自带的下拉刷新（大厅内容捧在 scroll-view 里，页面本体不滚动）：同样跳过缓存
   onRefresherRefresh: async function () {
     this.setData({ refreshing: true });
     await this.refreshList();
@@ -59,8 +76,8 @@ Page({
   },
 
   /**
-   * 全量拉取（唯一的网络请求点）：
-   * 先把云端刷进缓存 -> 一次性格式化成 postPool -> 再按当前 Tab 做内存筛选
+   * 全量拉取（唯一的网络请求点，不读本地快照 —— 下拉刷新因此天然跳过缓存）：
+   * 先把云端刷入缓存 -> 一次性格式化成 postPool -> 再按当前 Tab 做内存筛选
    */
   refreshList: async function () {
     try {
@@ -140,7 +157,7 @@ Page({
       category: raw.category,
       categoryKey: CATEGORY_MAP[raw.category] ? raw.category : 'other',
       categoryText: CATEGORY_MAP[raw.category] || '其他',
-      title: raw.title || '未命名寻呼',
+      title: raw.title || '未命名信息',
       content: raw.content || '',
       contentText: isAuditing ? CONTENT_MASK : (raw.content || ''),
       tags: raw.tags || [],

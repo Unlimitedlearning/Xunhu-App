@@ -31,7 +31,7 @@
     <!-- 简历引导：这份描述会公开在详情页，写清楚才有人敢点「申请加入」 -->
     <view class="resume-banner" wx:if="{{!resume}}">
       <view class="resume-banner-title">✏️ 补一句简历 / 技能描述，更容易被选中</view>
-      <view class="resume-banner-text">你填写的这部分内容会以「发布者名片」形式，在寻呼详情页向所有同学公开展示（默认显示 3 行，可点击展开），并配上你收到的匿名评价与满意度，帮同学判断要不要与你合作。</view>
+      <view class="resume-banner-text">你填写的这部分内容会以「发布者名片」形式，在详情页向所有同学公开展示（默认显示 3 行，可点击展开），并配上你收到的匿名评价与满意度，帮同学判断要不要与你合作。</view>
       <view class="resume-banner-action">在下方「简历 / 技能描述」里写完，点保存资料即可生效</view>
     </view>
 

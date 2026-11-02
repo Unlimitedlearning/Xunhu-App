@@ -63,7 +63,26 @@ Page({
     }
 
     this.guardPrompted = false;
+
+    // 1) 缓存先行（秒开）：本地快照 -> 内存缓存 -> 立即渲染
+    this.renderCachedList();
+    // 2) 再静默拉云端：全部拉完后再渲染一次
     this.refreshList();
+  },
+
+  /**
+   * 缓存先行：本地快照 -> 内存缓存 -> renderList（幂等，会话内只执行一次）
+   * 拿不到 openid 时不渲染：那时无法区分「我发出的 / 我收到的」，会误闪空状态
+   */
+  renderCachedList: function () {
+    if (this.cachedRendered) return;
+    if (!store.getOpenId()) return;
+
+    const cached = store.hydrateFromCache();
+    if (!cached.applications) return; // 没快照（首次使用 / 退出登录后）：等 refreshList
+
+    this.cachedRendered = true;
+    this.renderList();
   },
 
   // 进入任务页时的拦截提示（同一次进入只弹一次，避免 onShow 反复弹）
@@ -88,8 +107,9 @@ Page({
     });
   },
 
-  // 云端刷缓存 -> 同步渲染
+  // 云端刷缓存 -> 同步渲染（只拉云端、不读本地快照：下拉刷新 / 页面停留后看到的都是最新状态）
   refreshList: async function () {
+    this.cachedRendered = true; // 云端已拉过，后续 onShow 不再用快照闪旧数据
     // 帖子与申请必须一起重新拉。
     // 旧逻辑只在「帖子缓存为空」时才拉 posts，于是：在控制台把帖子改成 ended、
     // 或其他端结束后，任务页一直用启动时的旧 status 判断 postEnded —— 评价按钮永远不出现。
@@ -271,7 +291,7 @@ Page({
     return {
       id: app.id,
       postId: app.postId,
-      postTitle: post ? post.title : '该寻呼已被删除',
+      postTitle: post ? post.title : '该信息已被删除',
       authorName: post ? post.authorName : '未知',
       applicantName: app.applicantName,
       status: status,

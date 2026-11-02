@@ -67,7 +67,7 @@
       <view class="card-footer">
         <text class="tip-text" wx:if="{{item.status === 'pending'}}">发起人还在考虑，耐心等等～</text>
         <text class="tip-text" wx:elif="{{item.status === 'rejected'}}">很遗憾，这次没搭上</text>
-        <text class="tip-text" wx:elif="{{item.postEnded}}">该寻呼已结束，可以给对方评价了</text>
+        <text class="tip-text" wx:elif="{{item.postEnded}}">该信息已结束，可以给对方评价了</text>
         <text class="tip-text" wx:else>申请已通过，快去联系发起人吧</text>
       </view>
     </view>
@@ -131,7 +131,7 @@
 
       <view class="card-footer" wx:if="{{!item.isPending}}">
         <text class="tip-text" wx:if="{{item.status === 'rejected'}}">你已拒绝该申请</text>
-        <text class="tip-text" wx:elif="{{item.postEnded}}">该寻呼已结束，可以给申请人评价了</text>
+        <text class="tip-text" wx:elif="{{item.postEnded}}">该信息已结束，可以给申请人评价了</text>
         <text class="tip-text" wx:else>已同意，可联系申请人进一步沟通</text>
       </view>
     </view>
@@ -139,7 +139,7 @@
     <view class="empty-state" wx:if="{{receivedList.length === 0}}">
       <text class="icon">📭</text>
       <view class="text">暂时还没有人申请你的项目</view>
-      <view class="sub-text">发布一条寻呼，让同学找到你</view>
+      <view class="sub-text">发布一条信息，让同学找到你</view>
     </view>
   </view>
 

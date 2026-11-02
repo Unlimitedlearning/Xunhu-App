@@ -26,7 +26,7 @@
       <view class="post-list">
 
         <!-- 首次拉云数据中：一行轻量提示，避免误显示空状态 -->
-        <view class="loading-text" wx:if="{{!loaded}}">正在加载最新寻呼…</view>
+        <view class="loading-text" wx:if="{{!loaded}}">正在加载最新信息…</view>
 
         <!-- 没有任何数据：灰色提示卡片（文案随 Tab 变化） -->
         <view class="empty-card" wx:elif="{{postList.length === 0}}">

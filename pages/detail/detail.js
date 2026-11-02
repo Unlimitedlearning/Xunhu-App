@@ -11,6 +11,9 @@ const REPORT_CATEGORIES = constants.REPORT_CATEGORIES;
 const AUDITING_BLOCK_MESSAGE = constants.AUDITING_BLOCK_MESSAGE;
 const RESUME_PREVIEW_CHARS = constants.AUTHOR_RESUME_PREVIEW_CHARS;
 
+// 申请前必须让用户看到的警告（与协议 2.1 同一口径）：联系方式必须真实
+const APPLY_CONTACT_WARNING = '请确保您填写的联系方式真实有效。若被举报虚假联系，平台将封禁您的账号权限。';
+
 // 时间戳 -> YYYY-MM-DD（详情页评价只展示日期，够用也不占宽度）
 function formatReviewTime(timestamp) {
   const value = Number(timestamp) || 0;
@@ -252,6 +255,24 @@ Page({
     });
   },
 
+  // 申请前二次确认：警告「联系方式必须真实，虚假联系会被封号」，用户点确认才写库
+  confirmApply: function () {
+    return new Promise(function (resolve) {
+      wx.showModal({
+        title: '申请加入',
+        content: APPLY_CONTACT_WARNING,
+        confirmText: '确认申请',
+        cancelText: '再想想',
+        success: function (res) {
+          resolve(!!res.confirm);
+        },
+        fail: function () {
+          resolve(false); // 弹窗异常（极罕见）当作用户未确认，不发请求
+        }
+      });
+    });
+  },
+
   applyJoin: async function () {
     const post = this.data.post;
     if (!post) return;
@@ -268,7 +289,7 @@ Page({
       return;
     }
 
-    // 0. 身份前提：展示名与联系方式都必须来自你自己在「我的」填的资料（云端 users 集合）
+    // 1. 身份前提：展示名与联系方式都必须来自你自己在「我的」填的资料（云端 users 集合）
     const nickname = store.getNickname();
     if (!nickname) {
       this.ensureProfileReady('申请前请先在「我的」页面填写并保存昵称，申请人展示名取这里');
@@ -281,7 +302,11 @@ Page({
       return;
     }
 
-    // 1. 写入一条 pending 申请（带申请人自己填的联系方式 + 学号，仅 accepted 后对发帖人可见）
+    // 2. 写入前先弹窗警告：联系方式必须真实，虚假联系会被封禁（用户确认后才落库）
+    const confirmed = await this.confirmApply();
+    if (!confirmed) return;
+
+    // 3. 写入一条 pending 申请（带申请人自己填的联系方式 + 学号，仅 accepted 后对发帖人可见）
     const application = {
       postId: post.id,
       applicantId: openid,
@@ -301,7 +326,7 @@ Page({
       return;
     }
 
-    // 2. 热度 +5：同一用户对同一帖子只贡献一次申请热度
+    // 4. 热度 +5：同一用户对同一帖子只贡献一次申请热度
     let heat = store.resolveHeat(post);
     if (store.claimHeatOnce(post.id, openid, store.HEAT_ACTION.APPLY)) {
       heat += 5;
@@ -323,7 +348,7 @@ Page({
   },
 
   /**
-   * 【发帖人】结束寻呼：底部左侧小字按钮
+   * 【发帖人】结束信息：底部左侧小字按钮
    * 二次确认后把 status 改为 'ended' 并记录 endTime（云端数据库写入，仅本人有权改自己这条）
    * 结束后：大厅「最新发布 / 最热招募」不再展示，只在「往期历史」里按 endTime 排序
    */
@@ -334,7 +359,7 @@ Page({
 
     const that = this;
     wx.showModal({
-      title: '结束寻呼',
+      title: '结束信息',
       content: '结束后该信息将移入「往期历史」，且不再接收新的申请。确定结束吗？',
       confirmText: '结束',
       confirmColor: '#e53935',
@@ -358,7 +383,7 @@ Page({
       endTime = await store.endPost(post.id);
     } catch (err) {
       wx.hideLoading();
-      console.error('[detail] 结束寻呼失败 code=' + (err && err.code) + '：', err);
+      console.error('[detail] 结束信息失败 code=' + (err && err.code) + '：', err);
       wx.showToast({ title: (err && err.message) || '结束失败，请稍后重试', icon: 'none' });
       return;
     }
@@ -373,7 +398,7 @@ Page({
       isEnded: true
     });
 
-    wx.showToast({ title: '已结束该寻呼', icon: 'none' });
+    wx.showToast({ title: '已结束该信息', icon: 'none' });
   },
 
   /**

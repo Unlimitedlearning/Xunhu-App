@@ -26,6 +26,20 @@ const COLLECTION = 'users';
 // 与小程序端 utils/constants.js 的 STUDENT_ID_REGEX 保持一致（云函数目录独立，无法 require 小程序文件）
 const STUDENT_ID_REGEX = /^31\d{8}$/;
 
+/* ---------------- 用户角色（v1.1.0 角色底座） ----------------
+ * role 只允许三个值：
+ *   user   普通用户（默认；首次建档时由服务端写入）
+ *   banned 封禁：publish / review 会在写入前拦住
+ *   admin  管理员（目前无后台，仅先在数据层预留，写入只能走控制台）
+ * 【安全红线】role 绝不能由客户端指定：
+ *   - normalize() 是白名单，只取 nickname / studentId / resume / contact，客户端传的 role 根本进不了 payload；
+ *   - 更新已有资料时，role 一律以库里的旧值为准（缺字段时补 user），客户端传 'admin' 也不生效。
+ */
+const ROLE_USER = 'user';
+const ROLE_BANNED = 'banned';
+const ROLE_ADMIN = 'admin';
+const VALID_ROLES = [ROLE_USER, ROLE_BANNED, ROLE_ADMIN];
+
 /* ---------------- 违禁词库 + 净化匹配（与 utils/constants.js 同值副本） ----------------
  * 为什么写在云函数里：个人主体调不了微信机审（msgSecCheck 48001），本地词库就是主防线，
  *   而客户端能被改包绕过，所以必须再有一份落在服务端。
@@ -136,6 +150,14 @@ function ownerOf(doc) {
   return (doc && (doc._openid || doc.openid)) || '';
 }
 
+// 文档里的角色：非法/缺失一律当 user（历史文档没有 role 字段，按普通用户处理）
+function pickRole(doc) {
+  const role = String((doc && doc.role) || '').toLowerCase();
+  return VALID_ROLES.indexOf(role) > -1 ? role : ROLE_USER;
+}
+
+// 字段白名单：只允许这四个字段被客户端写入。
+// 注意：role / _openid / openid / createTime 都不在白名单里 —— 这就是「客户端改不了角色」的根本保证。
 function normalize(input) {
   const source = input || {};
   return {
@@ -207,6 +229,7 @@ async function createProfile(db, payload, openid) {
   const doc = Object.assign({}, payload, {
     _openid: openid, // 唯一键（服务端写入，客户端不可伪造）
     openid: openid,  // 兼容字段：历史文档 / 调试识别
+    role: ROLE_USER, // 角色默认值：新建用户一律 user，后端才有权改成 banned / admin
     createTime: Date.now()
   });
 
@@ -220,7 +243,7 @@ async function createProfile(db, payload, openid) {
       const message = String((err && err.message) || '');
       if (message.indexOf('_openid') === -1) throw err;
       // 降级：不写 _openid，只靠 openid 字段
-      const fallback = Object.assign({}, payload, { openid: openid, createTime: Date.now() });
+      const fallback = Object.assign({}, payload, { openid: openid, role: ROLE_USER, createTime: Date.now() });
       const retry = await db.collection(COLLECTION).add({ data: fallback });
       return { id: retry._id, data: Object.assign({ _id: retry._id }, fallback) };
     }
@@ -255,6 +278,12 @@ exports.main = async (event) => {
   }
 
   if (action === 'save') {
+    // 【role 不可写】客户端若在 profile 里夹带 role（含 role:'admin'），一律丢弃。
+    // normalize() 已经是白名单，这里再显式删一次，防止以后有人把实现改成 Object.assign 时漏掉。
+    if (event && event.profile && typeof event.profile === 'object') {
+      delete event.profile.role;
+    }
+
     const data = normalize(event && event.profile);
     if (!data.nickname) {
       return { ok: false, code: 'NICKNAME_REQUIRED', message: '昵称不能为空' };
@@ -320,6 +349,12 @@ exports.main = async (event) => {
       // 已有资料 -> 只 update，绝不 add
       if (docs.length) {
         const primary = docs[0];
+
+        // 【角色不可改】以库里的值为准；历史文档没有 role 时顺手补默认 user（一次懒迁移）
+        const existingRole = pickRole(primary);
+        if (primary.role !== existingRole) {
+          payload.role = existingRole;
+        }
 
         // 【学号锁】已「合法绑定」过学号时，忽略本次请求传入的 studentId，强制用库里的旧值。
         // 前端 disabled 只是体验，这里才是真正的锁：抓包改包也改不掉。

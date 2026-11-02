@@ -113,7 +113,9 @@ const RISKY_MESSAGE = '您发布的内容涉嫌违规，请修改后重试';
 // 本地词库命中时的统一文案（前端「轻量拦截」对应，这里是绕不过的绝对防线）
 const LOCAL_RISKY_MESSAGE = '内容包含违规信息';
 // 一人一帖：与小程序端 constants.ACTIVE_POST_LIMIT_MESSAGE 保持同一份文案
-const ACTIVE_LIMIT_MESSAGE = '您已有一条寻呼中的信息，请先结束后再发布新信息。';
+const ACTIVE_LIMIT_MESSAGE = '您已有一条进行中的信息，请先结束后再发布新信息。';
+// 账号被封禁（users.role === 'banned'）时的统一文案，与 cloudfunctions/review 同值
+const BANNED_MESSAGE = '您的账号因违规已被限制使用';
 
 function errCodeOf(err) {
   return String((err && (err.errCode || err.code)) || '');
@@ -250,15 +252,21 @@ function normalizeTags(input) {
 }
 
 // 发布人展示名 / 联系方式优先取 users 集合里的真实资料（客户端传什么都不认）
+// 同时兼容两种历史写法：_openid（新文档）/ openid（旧文档只有普通字段）
 async function loadProfile(db, openid) {
-  try {
-    const res = await db.collection(USERS).where({ _openid: openid }).limit(1).get();
-    return ((res && res.data) || [])[0] || null;
-  } catch (err) {
-    if (isMissingCollection(err)) return null;
-    console.warn('[publish] 读取 users 资料失败，回退到入参：', err && err.message);
-    return null;
+  const conditions = [{ _openid: openid }, { openid: openid }];
+  for (let i = 0; i < conditions.length; i++) {
+    try {
+      const res = await db.collection(USERS).where(conditions[i]).limit(1).get();
+      const doc = ((res && res.data) || [])[0];
+      if (doc) return doc;
+    } catch (err) {
+      if (isMissingCollection(err)) return null;
+      console.warn('[publish] 读取 users 资料失败，回退到入参：', err && err.message);
+      return null;
+    }
   }
+  return null;
 }
 
 /* ---------------- 主流程 ---------------- */
@@ -299,6 +307,14 @@ exports.main = async (event) => {
 
   // 2. 身份：必须已完善资料（昵称 + 学号 + 联系方式都在 users 里）
   const profile = await loadProfile(db, openid);
+
+  // 2.1 账号状态（v1.1.0 角色底座）最优先：被封禁的用户什么都不能写。
+  //     role 由服务端/控制台维护（cloudfunctions/user 不允许客户端写 role），改包也绕不过。
+  if (String((profile && profile.role) || 'user').toLowerCase() === 'banned') {
+    console.log('[publish] 账号已被封禁，拦截发布：', openid);
+    return { ok: false, code: 'ACCOUNT_BANNED', message: BANNED_MESSAGE };
+  }
+
   if (!profile || !String(profile.nickname || '').trim()) {
     return { ok: false, code: 'PROFILE_NOT_READY', message: '请先在「我的」页面完善资料后再发布' };
   }
@@ -312,7 +328,7 @@ exports.main = async (event) => {
     return { ok: false, code: 'PROFILE_NOT_READY', message: '请先在「我的」页面填写联系方式后再发布' };
   }
 
-  // 3. 一人一帖：同一用户同时只允许一条 active（寻呼中）的帖子
+  // 3. 一人一帖：同一用户同时只允许一条 active（进行中）的帖子
   //    前端在「大厅 + 号」和「发布按钮」上已拦过一道，但客户端能改包绕过，这里才是绝对防线
   try {
     const dedupe = await db.collection(POSTS)
@@ -391,7 +407,7 @@ exports.main = async (event) => {
     authorOpenid: openid,
     authorName: authorName,
     contact: contact,
-    status: 'active', // 机审通过即上线（寻呼中）
+    status: 'active', // 机审通过即上线（进行中）
     heat: 0,
     createTime: now,
     // 留痕：机审结论，事后被举报时方便判断是「漏审」还是「改了内容」

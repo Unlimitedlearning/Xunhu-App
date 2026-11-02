@@ -1,5 +1,5 @@
 // utils/mockData.js
-// 寻呼 (Xunhu) 本地假数据
+// 寻呼校园 (Xunhu) 本地假数据
 // 字段严格遵循 PRD「四、核心数据模型」：
 //   posts        -> id / category / title / content / tags / authorName / contact / status / heat / createTime
 //   applications -> id / postId / applicantId / applicantName / applicantContact / receiverId / status / createTime
@@ -12,7 +12,7 @@ const HOUR = 60 * 60 * 1000;
 /**
  * 帖子假数据（对应 posts 集合）
  * category 枚举：team 组队 / resume 自荐 / partner 搭子
- * status   枚举：auditing 审核中 / active 寻呼中 / ended 已结束
+ * status   枚举：auditing 审核中 / active 进行中 / ended 已结束
  */
 const postList = [
   {

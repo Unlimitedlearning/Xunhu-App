@@ -90,7 +90,7 @@
 <!-- 兜底：帖子不存在 -->
 <view class="empty-state" wx:if="{{notFound}}">
   <text class="icon">🔍</text>
-  <view class="text">这条寻呼已经不见了</view>
+  <view class="text">这条信息已经不见了</view>
   <view class="sub-text">可能已被发起人删除或结束</view>
 </view>
 

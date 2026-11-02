@@ -15,7 +15,7 @@
   <!-- 标题 -->
   <view class="form-group">
     <view class="label-row">
-      <text class="label">寻呼标题<text class="required">*</text></text>
+      <text class="label">信息标题<text class="required">*</text></text>
       <text class="counter">{{title.length}}/15</text>
     </view>
     <input class="input {{focusField === 'title' ? 'field-focus' : ''}}"
@@ -66,5 +66,5 @@
     <text class="tip">仅在你同意申请后，才会展示给申请人</text>
   </view>
 
-  <button class="submit-btn" type="primary" bindtap="submitPost">发布寻呼</button>
+  <button class="submit-btn" type="primary" bindtap="submitPost">发布信息</button>
 </view>

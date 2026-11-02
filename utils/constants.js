@@ -48,11 +48,11 @@ const CATEGORY_LIST = [
   { key: 'partner', text: '搭子' }
 ];
 
-// 帖子状态：draft 草稿 / auditing 审核中（被举报打码）/ active 寻呼中（机审通过已上线）/ ended 已结束
+// 帖子状态：draft 草稿 / auditing 审核中（被举报打码）/ active 进行中（机审通过已上线）/ ended 已结束
 const POST_STATUS_MAP = {
   draft: '草稿',
   auditing: '审核中',
-  active: '寻呼中',
+  active: '进行中',
   ended: '已结束'
 };
 
@@ -60,9 +60,9 @@ const POST_STATUS_MAP = {
 const CONTENT_RISKY_MESSAGE = '您发布的内容涉嫌违规，请修改后重试';
 const AUDITING_BLOCK_MESSAGE = '该内容涉嫌违规，正在审查中';
 
-// 一人一帖：同一用户同时只允许一条 active（寻呼中）的帖子。
+// 一人一帖：同一用户同时只允许一条 active（进行中）的帖子。
 // 前端（大厅 + 号 / 发布页）只是体验层拦截，真正拦得住的是云函数 publish（ALREADY_HAS_ACTIVE）。
-const ACTIVE_POST_LIMIT_MESSAGE = '您已有一条寻呼中的信息，请先结束后再发布新信息。';
+const ACTIVE_POST_LIMIT_MESSAGE = '您已有一条进行中的信息，请先结束后再发布新信息。';
 
 /* ---------------- 双向评价（防互刷） -------------
  * 集合 reviews：reviewId / postId / reviewerOpenid / revieweeOpenid / rating / content / createTime
@@ -227,12 +227,15 @@ const STUDENT_ID_REGEX = /^31\d{8}$/;
 // 举报分类
 const REPORT_CATEGORIES = ['虚假信息', '违规内容', '骚扰谩骂', '其他'];
 
-// 本地 Storage 统一 key（只留仍在本地的部分：登录标记、草稿、热度防刷记录）
+// 本地 Storage 统一 key（只留仍在本地的部分：登录标记、草稿、热度防刷记录、页面秒开快照）
 // 注：举报记录已改为云端 reports 集合（云函数 report 写入），不再落本地
 const STORAGE_KEYS = {
   HEAT_HISTORY: 'local_heat_history', // 热度防刷记录：openid + 帖子 id + 日期 + 动作
   DRAFT: 'local_draft',               // 上传失败的单份草稿（离线可用，属本地概念）
-  IS_LOGIN: 'isLogin'                 // 仅表示「本次设备已登录」，不等于身份数据
+  IS_LOGIN: 'isLogin',                // 仅表示「本次设备已登录」，不等于身份数据
+  // 缓存先行（v1.1.0）：列表数据的本地快照，只为了 onShow 秒开，不入业务逻辑
+  CACHE_POSTS: 'cache_posts',              // 大厅帖子快照 { updateTime, list }
+  CACHE_APPLICATIONS: 'cache_applications' // 我的申请快照 { updateTime, list }（退出登录时清掉）
 };
 
 // 旧版本本地 key：启动时顺手清掉，避免旧数据死灰复燃

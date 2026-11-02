@@ -5,7 +5,7 @@
 //             命中直接 toast 具体违规词，不发请求（纯体验，能被改包绕过）
 //   第二层（云端）绝对防线：cloudfunctions/publish 写入前用同一套词库 + 净化正则再校一遍（真的拦截）
 // 状态流转：
-//   通过  -> 云端直接写 status: 'active'（寻呼中，大厅可见可点入）
+//   通过  -> 云端直接写 status: 'active'（进行中，大厅可见可点入）
 //   拦截  -> 不写库，表单保留，提示具体违规词 / 「内容包含违规信息」
 //   网络/云端异常 -> 存本地草稿（status: 'draft'），下次进发布页可恢复
 
@@ -239,7 +239,18 @@ Page({
         return;
       }
 
-      // 4. 其他（网络 / 云函数未部署 / 集合不存在）：存草稿，不让用户白写
+      // 4. 账号被封禁（users.role === 'banned'，云端拦截）：不存草稿，重启也绕不过去
+      if (err && err.code === 'ACCOUNT_BANNED') {
+        wx.showModal({
+          title: '账号受限',
+          content: err.message || '您的账号因违规已被限制使用',
+          showCancel: false,
+          confirmText: '我知道了'
+        });
+        return;
+      }
+
+      // 5. 其他（网络 / 云函数未部署 / 集合不存在）：存草稿，不让用户白写
       store.saveDraft(Object.assign({}, postData, { status: 'draft' }));
       wx.showToast({ title: '发布失败，已存草稿', icon: 'none' });
       that.resetForm();

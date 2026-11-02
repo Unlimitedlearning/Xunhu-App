@@ -11,7 +11,14 @@
 //   命中即拒绝（文案「评价失败：包含违规词汇【xxx】，请修改后重试。」）。词库与 cleanText 是第三份副本，
 //   改 utils/constants.js 的词库时要同步 cloudfunctions/publish 与本文件。
 //
-// 集合字段：reviewId / postId / reviewerOpenid / revieweeOpenid / rating(1满意,0不满意) / content / createTime
+// 集合字段：reviewId / postId / reviewerOpenid / revieweeOpenid / rating(1满意,0不满意) / content /
+//           contextSnapshot（合作上下文快照，如「【组队-挑战杯电梯卫士】」） / createTime
+//
+// 【contextSnapshot 为什么在服务端生成】
+//   1) 评价人与被评价人之外的第三方（后来的浏览者）也需要知道「这条好评是针对哪个项目的」；
+//   2) 帖子结束后作者可以改标题 / 删帖，快照必须在「提交评价那一刻」定死，事后不追改；
+//   3) 客户端能伪造任何字段，上下文只能由服务端查 posts 后拼，改包绕不过。
+//   前端不做二次拼接：有快照就展示，没有（老数据）就只展示评价原文。
 //
 // 调用方式（小程序端 store.*）：
 //   { action: 'submit', postId, revieweeOpenid, rating, content }  -> { ok, created, review }
@@ -39,6 +46,42 @@ const RECEIVED_LIMIT = 20; // 个人页展示的评价条数
 
 // 已评价过的统一文案（与小程序端 constants.ALREADY_REVIEWED_MESSAGE 同值）
 const ALREADY_REVIEWED_MESSAGE = '您已经评价过本次合作了';
+
+/* ---------------- 合作上下文快照（contextSnapshot） ---------------- */
+
+// 分类英文枚举 -> 中文（与小程序端 constants.CATEGORY_MAP 同值副本）
+const CONTEXT_CATEGORY_MAP = { team: '组队', resume: '自荐', partner: '搭子' };
+
+// 帖子查不到 / 标题异常（空、非字符串、全是空白）时的兜底文案
+const CONTEXT_FALLBACK = '【历史合作】';
+
+// 标题进快照前截断：快照只做「这是哪个项目」的识别，不需要整段标题
+const CONTEXT_TITLE_MAX = 30;
+
+/**
+ * 拼合作上下文快照：帖子分类 + 标题
+ *   正常：{ category: 'team', title: '挑战杯电梯卫士' } -> '【组队-挑战杯电梯卫士】'
+ *   分类脏数据（缺失 / 未知枚举）但标题正常 -> '【挑战杯电梯卫士】'（标题信息量更大，别丢）
+ *   帖子查不到 / 标题异常 -> '【历史合作】'
+ * @param {object|null} post posts 集合里的文档
+ * @return {string} 永远返回非空字符串，前端可无条件渲染
+ */
+function buildContextSnapshot(post) {
+  if (!post || typeof post !== 'object') return CONTEXT_FALLBACK;
+
+  const rawTitle = post.title;
+  // 只接受字符串：数字 / 对象 / undefined 一律当异常数据
+  if (typeof rawTitle !== 'string') return CONTEXT_FALLBACK;
+
+  // 标题里的换行 / 连续空格压成一个空格，避免快照在卡片里被撑成多行
+  const title = rawTitle.replace(/\s+/g, ' ').trim().slice(0, CONTEXT_TITLE_MAX);
+  if (!title) return CONTEXT_FALLBACK;
+
+  const categoryKey = String(post.category || '').trim();
+  const categoryText = CONTEXT_CATEGORY_MAP[categoryKey] || '';
+
+  return categoryText ? '【' + categoryText + '-' + title + '】' : '【' + title + '】';
+}
 
 // 违禁词命中时的统一文案（口径「十一 / 十四」：评价失败：包含违规词汇【xxx】，请修改后重试。）
 function riskyMessage(word) {
@@ -204,6 +247,8 @@ function pickReview(doc) {
     revieweeOpenid: doc.revieweeOpenid || '',
     rating: doc.rating === 1 ? 1 : 0,
     content: doc.content || '',
+    // 老数据没有这个字段：统一回空串，前端不会取到 undefined / null
+    contextSnapshot: String(doc.contextSnapshot || ''),
     createTime: doc.createTime || 0
   };
 }
@@ -297,6 +342,8 @@ async function handleSubmit(db, openid, payload) {
   // reviewId 用「评价人_帖子_被评价人」拼出来：一场合作一条，天然唯一
   const reviewId = openid + '_' + postId + '_' + revieweeOpenid;
   const createTime = Date.now();
+  // 合作上下文快照：用上面已经查出来的 post（category + title），不额外多一次读
+  const contextSnapshot = buildContextSnapshot(post);
   const newDoc = {
     _openid: openid, // 归属：便于按评价人追溯（权限已锁死，前端读不到）
     reviewId: reviewId,
@@ -305,6 +352,7 @@ async function handleSubmit(db, openid, payload) {
     rating: rating,
     content: content,
     postId: postId,
+    contextSnapshot: contextSnapshot,
     createTime: createTime
   };
 
@@ -367,6 +415,7 @@ async function handleSubmit(db, openid, payload) {
       revieweeOpenid: revieweeOpenid,
       rating: rating,
       content: content,
+      contextSnapshot: contextSnapshot,
       createTime: createTime
     }
   };
@@ -435,11 +484,13 @@ async function handleReceived(db, openid) {
     const total = (totalRes && totalRes.total) || 0;
     const goodCount = (goodRes && goodRes.total) || 0;
 
-    // 匿名：列表里只给 rating / content / createTime，reviewId 与评价人身份一律不下发
+    // 匿名：列表里只给 rating / content / contextSnapshot / createTime，
+    // reviewId 与评价人身份一律不下发（contextSnapshot 只含分类+标题，不含任何人）
     const list = ((listRes && listRes.data) || []).map(function (doc) {
       return {
         rating: doc.rating === 1 ? 1 : 0,
         content: doc.content || '',
+        contextSnapshot: String(doc.contextSnapshot || ''),
         createTime: doc.createTime || 0
       };
     });

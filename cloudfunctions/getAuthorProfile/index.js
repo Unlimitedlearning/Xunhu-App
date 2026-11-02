@@ -17,11 +17,13 @@
 //     ok: true,
 //     author: { nickname, avatarText, resume, hasResume },
 //     review: { total, goodCount, rate, showRate, minCount, pendingText, anonymousName,
-//               list: [{ rating, ratingText, content, createTime }] }
+//               list: [{ rating, ratingText, content, contextSnapshot, createTime }] }
 //   }
 //
 // 【数据兜底】没填简历 -> resume 为 ''、hasResume 为 false；没收到评价 -> list 为 []、total 为 0。
 // 任何一个集合不存在 / 查询报错，都降级成空值返回，绝不把 undefined 丢给前端。
+// contextSnapshot（合作上下文快照）同理：老数据没有这个字段就回空串，前端用 wx:if 判空后不渲染，
+// 绝不出现「null」或「【】」这种空括号。
 
 const cloud = require('wx-server-sdk');
 
@@ -167,8 +169,9 @@ async function loadReviews(db, openid) {
     const total = (totalRes && totalRes.total) || 0;
     const goodCount = (goodRes && goodRes.total) || 0;
 
-    // 匿名：只回 rating / ratingText / content / createTime，
-    // reviewId、reviewerOpenid、revieweeOpenid 一律不下发（前端拿不到任何评价人线索）
+    // 匿名：只回 rating / ratingText / content / contextSnapshot / createTime，
+    // reviewId、reviewerOpenid、revieweeOpenid 一律不下发（前端拿不到任何评价人线索）；
+    // contextSnapshot 只含「分类-标题」，不含任何人的身份信息
     const list = ((listRes && listRes.data) || [])
       .filter(function (doc) {
         return String((doc && doc.content) || '').trim() !== '';
@@ -180,6 +183,8 @@ async function loadReviews(db, openid) {
           rating: isGood ? 1 : 0,
           ratingText: isGood ? '满意' : '不满意',
           content: String(doc.content || '').trim(),
+          // 老数据 / 脏数据一律回空串（前端判空后不渲染，不会出现 null 或空括号）
+          contextSnapshot: String((doc && doc.contextSnapshot) || ''),
           createTime: doc.createTime || 0
         };
       });

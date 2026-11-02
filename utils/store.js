@@ -999,6 +999,8 @@ function normalizeReview(doc) {
     revieweeOpenid: doc.revieweeOpenid || '',
     rating: doc.rating === 1 ? 1 : 0,
     content: doc.content || '',
+    // 合作上下文快照（如「【组队-挑战杯】」）；老数据没有这个字段 -> ''，页面判空后不渲染
+    contextSnapshot: String(doc.contextSnapshot || ''),
     createTime: doc.createTime || 0
   };
 }
@@ -1211,6 +1213,8 @@ function normalizeAuthorCard(result) {
         isGood: isGood,
         ratingText: item.ratingText || (isGood ? '满意' : '不满意'),
         content: String(item.content || ''),
+        // 合作上下文快照：老数据（部署前提交的评价）没有这个字段 -> ''，wxml 判空后整块不渲染
+        contextSnapshot: String(item.contextSnapshot || ''),
         createTime: Number(item.createTime) || 0
       };
     });

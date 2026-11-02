@@ -97,7 +97,12 @@
           <text class="review-from">{{item.fromName}}</text>
           <text class="review-time">{{item.createTime}}</text>
         </view>
-        <view class="review-badge {{item.isGood ? 'review-badge-good' : 'review-badge-bad'}}">{{item.ratingText}}</view>
+        <!-- 满意度、评价状态、合作上下文：一行排开，空间不够时只截上下文 -->
+        <view class="review-meta">
+          <view class="review-badge {{item.isGood ? 'review-badge-good' : 'review-badge-bad'}}">{{item.ratingText}}</view>
+          <!-- 合作上下文快照：服务端写入时定死的「【组队-某项目】」，老数据无此字段时整块不渲染 -->
+          <view class="review-context" wx:if="{{item.contextSnapshot}}">{{item.contextSnapshot}}</view>
+        </view>
         <view class="review-content">{{item.content}}</view>
       </view>
       <view class="empty-review" wx:if="{{reviews.length === 0}}">{{reviewEmptyText}}</view>

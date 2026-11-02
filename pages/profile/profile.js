@@ -51,7 +51,7 @@ Page({
     showReviewRate: false,                 // 总数 >= 3 才展示好评率，否则只显示「满意度统计中...」
     reviewPendingText: constants.REVIEW_PENDING_TEXT,
     reviewEmptyText: '还没有收到评价',
-    reviews: []                            // [{ id, fromName: '某同学', content, ratingText, isGood, createTime }]
+    reviews: []                            // [{ id, fromName: '某同学', content, contextSnapshot, ratingText, isGood, createTime }]
   },
 
   onShow: function () {
@@ -138,6 +138,9 @@ Page({
           id: item.reviewId || String(item.createTime || ''),
           fromName: constants.REVIEW_ANONYMOUS_NAME,
           content: item.content,
+          // 合作上下文快照（服务端提交时定死的「【分类-标题】」）：
+          // 老数据没有这个字段 -> ''，wxml 用 wx:if 判空后整块不渲染，绝不出现 null / 空括号
+          contextSnapshot: item.contextSnapshot || '',
           isGood: item.rating === 1,
           ratingText: item.rating === 1 ? '满意' : '不满意',
           createTime: formatReviewTime(item.createTime)

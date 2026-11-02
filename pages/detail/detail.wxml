@@ -59,6 +59,8 @@
           <text class="author-review-badge {{item.isGood ? 'badge-good' : 'badge-bad'}}">{{item.ratingText}}</text>
           <text class="author-review-time" wx:if="{{item.createTimeText}}">{{item.createTimeText}}</text>
         </view>
+        <!-- 合作上下文快照：让阅读者知道这条好评 / 差评是针对哪个项目（老数据无此字段时不渲染） -->
+        <view class="author-review-context" wx:if="{{item.contextSnapshot}}">{{item.contextSnapshot}}</view>
         <view class="author-review-content">{{item.content}}</view>
       </view>
 

@@ -287,6 +287,13 @@ page {
   margin-bottom: 8rpx;
 }
 
+/* 单条评价里的「评价状态 + 合作上下文」行：flex 横排，宽度不够时只让上下文收缩 */
+.review-meta {
+  display: flex;
+  align-items: center;
+  margin-bottom: 10rpx;
+}
+
 /* 单条评价里的小标签：满意 / 不满意 */
 .review-badge {
   display: inline-block;
@@ -295,6 +302,32 @@ page {
   padding: 6rpx 12rpx;
   border-radius: 6rpx;
   margin-bottom: 10rpx;
+}
+
+/* flex 行内：margin 交给 .review-meta 控制，避免两个元素基线错位 */
+.review-meta .review-badge {
+  margin-bottom: 0;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* 合作上下文快照（如「【组队-挑战杯】」）：
+   截断完全交给 CSS —— 不写死字数，不同机型按屏宽自动收尾省略号，绝不会撑爆卡片 */
+.review-context {
+  max-width: 50%;          /* 宽度上限：再长也只占一半，给右侧 / 下行文字留位置 */
+  margin-left: 12rpx;
+  padding: 4rpx 12rpx;
+  font-size: 22rpx;
+  line-height: 1.3;
+  color: #8a8a8a;
+  background-color: #f5f6f8;
+  border-radius: 6rpx;
+  overflow: hidden;        /* 超出部分裁掉 */
+  text-overflow: ellipsis; /* 裁掉的地方补省略号 */
+  white-space: nowrap;     /* 不换行，才能单行截断 */
+  min-width: 0;
+  flex-shrink: 1;          /* 允许被压缩，不把同行元素挤出去 */
+  box-sizing: border-box;
 }
 
 .review-badge-good {

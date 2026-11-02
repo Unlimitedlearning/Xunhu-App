@@ -8,7 +8,7 @@
 //   3) reviews 权限设「所有用户不可读写」后，评价人 openid 不会外泄，匿名展示才真匿名。
 //
 // 内容安全：评价正文同样是引流重灾区，因此 handleSubmit 在写库前用「本地违禁词库 + 净化匹配」再校一遍，
-//   命中即拒绝（文案「评价内容包含违规词汇，请修改」）。词库与 cleanText 是第三份副本，
+//   命中即拒绝（文案「评价失败：包含违规词汇【xxx】，请修改后重试。」）。词库与 cleanText 是第三份副本，
 //   改 utils/constants.js 的词库时要同步 cloudfunctions/publish 与本文件。
 //
 // 集合字段：reviewId / postId / reviewerOpenid / revieweeOpenid / rating(1满意,0不满意) / content / createTime
@@ -40,8 +40,10 @@ const RECEIVED_LIMIT = 20; // 个人页展示的评价条数
 // 已评价过的统一文案（与小程序端 constants.ALREADY_REVIEWED_MESSAGE 同值）
 const ALREADY_REVIEWED_MESSAGE = '您已经评价过本次合作了';
 
-// 违禁词命中时的统一文案（与小程序端同一句，前端直接 toast err.message）
-const RISKY_MESSAGE = '评价内容包含违规词汇，请修改';
+// 违禁词命中时的统一文案（口径「十一 / 十四」：评价失败：包含违规词汇【xxx】，请修改后重试。）
+function riskyMessage(word) {
+  return '评价失败：包含违规词汇' + (word ? '【' + word + '】' : '') + '，请修改后重试。';
+}
 
 /* ==================== DEV_TEST 自测后门（仅限本地联调） ====================
  * 为什么存在：只有一台设备/一个微信号，无法真开双账号，临时允许「自己评价自己」跑通闭环。
@@ -259,7 +261,7 @@ async function handleSubmit(db, openid, payload) {
   const violation = checkTextViolation(rawContent);
   if (!violation.pass) {
     console.warn('[review] 评价内容命中违禁词 word=' + violation.word + ' type=' + violation.type + ' reviewer=' + openid);
-    return { ok: false, code: 'CONTENT_RISKY', message: RISKY_MESSAGE };
+    return { ok: false, code: 'CONTENT_RISKY', message: riskyMessage(violation.word), hitWord: violation.word };
   }
 
   // 1. 两人必须在这条帖子上存在 accepted 的申请关系（服务端判定，改包绕不过）

@@ -9,9 +9,15 @@ const constants = require("../../utils/constants");
 const CATEGORY_MAP = constants.CATEGORY_MAP;
 const POST_STATUS_MAP = constants.POST_STATUS_MAP;
 const ACTIVE_POST_LIMIT_MESSAGE = constants.ACTIVE_POST_LIMIT_MESSAGE;
+const AUDITING_BLOCK_MESSAGE = constants.AUDITING_BLOCK_MESSAGE;
 
 // 审核中卡片的内容掩码
 const CONTENT_MASK = '*** *** ***';
+
+// 大厅允许展示的状态（口径「四、帖子状态机」）：
+//   active 正常展示 / auditing 打码展示 / ended 仅往期历史
+//   deleted（违规下架）与 unknown（拼错或未来新增的状态）一律不进列表 —— 宁可少显示，绝不误放
+const VISIBLE_STATUS = ['active', 'auditing', 'ended'];
 
 // 大厅 Tab（key 同时是 applyTab 的分支依据）
 const TABS = [
@@ -104,7 +110,10 @@ Page({
    *   往期历史：status === 'ended'，endTime 降序
    */
   applyTab: function (tabKey) {
-    const pool = this.postPool || [];
+    // deleted / unknown 在进入任何 Tab 之前就丢掉（下面三处 filter 只负责 active/auditing/ended 的细分）
+    const pool = (this.postPool || []).filter(function (item) {
+      return VISIBLE_STATUS.indexOf(item.status) > -1;
+    });
     let list;
 
     if (tabKey === 'history') {
@@ -141,12 +150,21 @@ Page({
   },
 
   /**
-   * 统一字段格式：只认 PRD 新字段（category / content / authorName / contact / status / heat）
+   * 统一字段格式：只认 PRD 新字段（category / content / authorName / status / heat）
    * 字段兜底：tags || []、heat || 0，防止渲染报错（PRD「六、数据兜底」）
    * status === 'auditing' 时描述区打码，contentText 直接给 WXML 用
+   * 【v1.3.0】不再输出 contact：联系方式已从 posts 迁到 post_contacts（客户端零权限），
+   *   大厅卡片本来也不展示它，没必要把写进 postPool / data。
    */
   formatPost: function (raw) {
-    const status = POST_STATUS_MAP[raw.status] ? raw.status : 'active';
+    // 状态兜底分三种，绝不把未知状态当成 active（否则 deleted / 拼错状态会以「进行中」出现且可点入）：
+    //   1) 字段缺失（老文档）  -> 'active'，仅兜底渲染，不能白屏
+    //   2) 白名单内（含 deleted） -> 原值，deleted 会被 applyTab 过滤掉
+    //   3) 其余（拼错 / 未来新增） -> 'unknown'，同样会被过滤掉
+    let status;
+    if (!raw.status) status = 'active';
+    else if (VISIBLE_STATUS.indexOf(raw.status) > -1 || raw.status === 'deleted') status = raw.status;
+    else status = 'unknown';
     const isAuditing = status === 'auditing';
 
     // 热度：直接取云文档里的值（本地覆盖表已下线）
@@ -162,10 +180,10 @@ Page({
       contentText: isAuditing ? CONTENT_MASK : (raw.content || ''),
       tags: raw.tags || [],
       authorName: raw.authorName || '匿名同学',
-      contact: raw.contact || '',
+      authorOpenid: raw.authorOpenid || '', // 用于判断「这是不是我自己的帖子」（审查中放行作者本人）
       status: status,
       statusKey: status,
-      statusText: POST_STATUS_MAP[status],
+      statusText: POST_STATUS_MAP[status] || '',
       heat: heat,
       createTime: raw.createTime || 0,
       endTime: raw.endTime || 0, // 「往期历史」按它降序
@@ -174,25 +192,37 @@ Page({
   },
 
   /**
-   * 卡片点击：先看是不是审查中（打码），再校验登录 / 资料完善，都过了才跳详情
+   * 卡片点击：先看是不是受罚者，再看是不是审查中（打码），再校验登录 / 资料完善，都过了才跳详情
    * （登录不代表能使用：昵称/联系方式缺失时对方无法联系你，所以要在入口拦住）
    */
   goToDetail: function (e) {
     const id = e.currentTarget.dataset.id;
     const status = e.currentTarget.dataset.status;
+    const authorOpenid = e.currentTarget.dataset.author || '';
 
-    // 1. 审查中（被举报打码 / 机审待复核）拦截跳转：
-    //    先于登录/资料校验，否则未登录用户点卡片只会看到「请先登录」，反而不知道内容有问题
-    if (status === 'auditing') {
-      wx.showToast({
-        title: constants.AUDITING_BLOCK_MESSAGE, // '该内容涉嫌违规，正在审查中'
-        icon: 'none',
-        duration: 1800
-      });
+    // 1. 受罚者（role === 'banned'）：口径「受罚者不可进入详情页」，最先拦
+    if (guard.isBanned()) {
+      guard.promptBanned();
       return;
     }
 
-    // 2 + 3. 未登录 / 资料未完善：(guard.ensureReady 内部已弹窗并引导去「我的」)
+    // 2. 审查中（被举报打码 / 机审待复核）：作者本人放行，其他人拦截
+    //    口径「四、帖子状态机」：发布者可以进入详情查看；其他用户点击时被拦截
+    //    放在登录/资料校验之前，否则未登录用户只会看到「请先登录」，反而不知道内容有问题
+    if (status === 'auditing') {
+      const myOpenid = store.getOpenId();
+      const isAuthor = !!myOpenid && !!authorOpenid && authorOpenid === myOpenid;
+      if (!isAuthor) {
+        wx.showToast({
+          title: AUDITING_BLOCK_MESSAGE, // '该内容涉嫌违规，正在审查中'
+          icon: 'none',
+          duration: 1800
+        });
+        return;
+      }
+    }
+
+    // 3 + 4. 未登录 / 受罚者 / 资料未完善：(guard.ensureReady 内部已弹窗并引导去「我的」)
     if (!guard.ensureReady()) return;
 
     wx.navigateTo({
@@ -202,11 +232,15 @@ Page({
 
   /**
    * 发布入口（+ 号）
-   * 拦截顺序：登录/资料 -> 一人一帖（status === 'active' 的帖子只能有一条）
+   * 拦截顺序：受罚者 -> 登录/资料 -> 一人一帖（active / auditing 都占名额，只能有一条）
    * 一人一帖判定优先读内存缓存；首次进入列表还没拉完（loaded=false）时补一次同步，避免误放行
    */
   goToPublish: async function () {
-    // 与点卡片完全同一套拦截：未登录 / 资料未完善 都不得进入发布页
+    // 与点卡片完全同一套拦截：受罚者 / 未登录 / 资料未完善 都不得进入发布页
+    if (guard.isBanned()) {
+      guard.promptBanned();
+      return;
+    }
     if (!guard.ensureReady()) return;
 
     let activeMine = store.findMyActivePost();
@@ -214,7 +248,7 @@ Page({
       try {
         await store.syncPosts();
       } catch (err) {
-        console.warn('[index] 发布前查重时拉取帖子失败，按「无 active 帖子」放行：', err);
+        console.warn('[index] 发布前查重时拉取帖子失败，按「无占用名额的帖子」放行：', err);
       }
       activeMine = store.findMyActivePost();
     }

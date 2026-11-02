@@ -111,7 +111,7 @@
         </view>
 
         <view class="meta-row"><text class="meta-item">学号：{{item.studentIdMasked}}</text></view>
-        <view class="meta-row"><text class="meta-item">违规警告：{{item.warningCount}} 次（满 2 次自动封禁）</text></view>
+        <view class="meta-row"><text class="meta-item">违规警告：{{item.warningCount}} 次（满 3 次自动封禁）</text></view>
         <view class="meta-row meta-row-last" wx:if="{{item.updateTime}}">
           <text class="meta-item meta-time">最近更新：{{item.updateTime}}</text>
         </view>

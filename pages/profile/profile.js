@@ -239,7 +239,7 @@ Page({
     );
     if (!violation.pass) {
       wx.showToast({
-        title: '包含违规词汇【' + violation.word + '】，请修改后重试',
+        title: constants.violationMessage('保存', violation.word),
         icon: 'none',
         duration: 2500
       });
@@ -296,11 +296,11 @@ Page({
         wx.showToast({ title: '学号格式不正确，请检查后重试', icon: 'none' });
       } else if (code === 'CONTENT_RISKY') {
         // 【第二道：云端拦截】本地校验被绕过（改包 / 旧版本客户端）时走到这里，
-        // 直接展示云端下发的具体文案（昵称、简历或联系方式包含违规词汇，请修改）
+        // 云端已按「保存失败：包含违规词汇【xxx】，请修改后重试。」下发，优先直接展示
         wx.showToast({
           title: (err && err.hitWord)
-            ? '包含违规词汇【' + err.hitWord + '】，请修改后重试'
-            : ((err && err.message) || '昵称、简历或联系方式包含违规词汇，请修改'),
+            ? constants.violationMessage('保存', err.hitWord)
+            : ((err && err.message) || constants.violationMessage('保存', '')),
           icon: 'none',
           duration: 2500
         });

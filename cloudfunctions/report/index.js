@@ -1,15 +1,22 @@
 // cloudfunctions/report/index.js
 // 作用：举报落库 + 举报权重累加 + 自动化风控（自动审查 / 自动封禁）。
 //
-// 数据流（v1.2.0）：
+// 数据流（v1.2.0 / v1.3.0 提高阈值）：
 //   1) reports 写入一条举报记录（status: 'pending'，供管理后台 getReports 拉取）
 //   2) posts.reportWeight +1 —— 仅「新的举报人」才加，同一人对同一帖子重复举报不加权
-//   3) reportWeight >= 3（REPORT_WEIGHT_AUDIT_THRESHOLD）
+//   3) reportWeight >= 5（REPORT_WEIGHT_AUDIT_THRESHOLD）
 //        -> posts.status = 'auditing'（大厅打码、不可点入）
 //        -> 发帖人 users.warningCount +1（同一条帖子只记一次，避免多举报人重复扣）
-//   4) 发帖人 warningCount >= 2（WARNING_BAN_THRESHOLD） -> users.role = 'banned'
+//   4) 发帖人 warningCount >= 3（WARNING_BAN_THRESHOLD） -> users.role = 'banned'
 // 例外：帖子被管理员「忽略」过（posts.auditDismissed = true）时，再次触顶只做下架审查（3），
 //   不再重复扣 warningCount —— 人工已经判定过无违规，不能靠“多找几个人举报”把作者封号。
+//
+// 【v1.3.0 防协同举报滥用（P0-6）】
+//   - 阈值从 3 人下架 / 2 次警告封号 提到 5 人 / 3 次：openid 的「人」成本太低（学号是自填），
+//     6~9 个协同举报就能让一个正常同学帖子全下架 + 账号封禁，太容易被凑人头。
+//   - 封禁只「标记状态」：users.role = 'banned' + banSource / banTime 留痕，
+//     不清会话、不下线、不断前端：浏览大厅、任务页、评价列表照常可用，
+//     仅在发布 / 申请 / 评价这些写入入口由云端拦下并给可读提示（可线下发邮件申诉）。
 //
 // 为什么放服务端：
 //   1) 举报人可以改别人的帖子吗？客户端没权限（posts 仅创建者可写），必须服务端改；
@@ -38,9 +45,9 @@ const MAX_DESC = 200;
 // 同一 openid 对同一帖子只记一条举报（防止刷举报把帖子反复拉进审查 / 反复降权）
 const DEDUPE_BY_REPORTER = true;
 
-// 自动风控阈值（与 cloudfunctions/admin 同值）
-const REPORT_WEIGHT_AUDIT_THRESHOLD = 3;
-const WARNING_BAN_THRESHOLD = 2;
+// 自动风控阈值（与 cloudfunctions/admin、utils/constants.js 三处同值）
+const REPORT_WEIGHT_AUDIT_THRESHOLD = 5; // 5 个不同举报人 -> 自动审查（原来是 3）
+const WARNING_BAN_THRESHOLD = 3;         // 累计 3 次警告 -> 标记 banned（原来是 2）
 
 function errCodeOf(err) {
   return String((err && (err.errCode || err.code)) || '');
@@ -107,6 +114,10 @@ async function bumpAuthorWarning(db, authorOpenid) {
   // 管理员账号不参与自动封禁（避免误封掉唯一的管理员，导致后台再也进不去）
   if (!banned && next >= WARNING_BAN_THRESHOLD && role !== 'admin') {
     data.role = 'banned';
+    // 【P0-6】只标记状态 + 留痕：不写任何「强制下线 / 清会话」字段，
+    // 前端浏览、任务页、评价列表照常可用，只在写入入口拦（可线下申诉）。
+    data.banSource = 'auto-report';
+    data.banTime = data.updateTime;
     banned = true;
   }
 
@@ -285,7 +296,7 @@ exports.main = async (event) => {
       }
     }
 
-    // 5.2 发帖人警告 +1（>= 2 次即封禁）
+    // 5.2 发帖人警告 +1（>= 3 次即标记封禁）
     //     例外：这条帖子曾经被管理员「忽略」并恢复上线（auditDismissed），
     //     说明人工已判定过无违规，再次触顶只下架复查，不再重复扣警告。
     if (post.auditDismissed) {

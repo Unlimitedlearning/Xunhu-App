@@ -1,0 +1,9 @@
+{
+  "name": "post",
+  "version": "1.0.0",
+  "description": "帖子状态唯一写入口：结束 / 删除 / 按关系下发联系方式",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}

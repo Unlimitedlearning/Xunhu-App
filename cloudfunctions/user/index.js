@@ -312,7 +312,7 @@ exports.main = async (event) => {
       return {
         ok: false,
         code: 'CONTENT_RISKY',
-        message: '昵称、简历或联系方式包含违规词汇，请修改',
+        message: '保存失败：包含违规词汇' + (violation.word ? '【' + violation.word + '】' : '') + '，请修改后重试。',
         hitWord: violation.word
       };
     }

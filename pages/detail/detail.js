@@ -72,7 +72,11 @@ Page({
 
     const openid = store.getOpenId();
     let post = store.findPost(id);
-    // 缓存里没有（冷启动 / 分享直达）→ 再拉一次
+    // 缓存里没有（冷启动 / 分享直达）：先用 _id 直取这一条（1 次请求）。
+    // v1.3.0 起列表只同步最新 20 条，靠 syncPosts() 会漏掉较早的帖子（分享链接进来就白屏）。
+    if (!post) {
+      post = await store.fetchPostById(id);
+    }
     if (!post) {
       try {
         await store.syncPosts();
@@ -155,6 +159,20 @@ Page({
     // 发布者名片单独拉：不 await，避免云函数慢时整页白屏等它
     // （名片失败了也只是显示空名片，帖子正文/申请按钮不受影响）
     this.loadAuthorCard(post);
+
+    // 作者本人：联系方式已从 posts 迁到 post_contacts（客户端不可读写），
+    // 只能由云函数 post 按关系（作者本人 / 已同意申请）下发
+    if (isOwner) this.loadOwnerContact(post);
+  },
+
+  /**
+   * 作者本人看自己填的联系方式（底部「联系方式」那一行）
+   * 非作者不调用：申请人只能在「任务页」同意之后看到，联系方式不再随帖子公开下发。
+   */
+  loadOwnerContact: async function (post) {
+    if (!post || !post.id || post.status === 'draft') return;
+    const contact = await store.fetchPostContact(post.id);
+    if (contact) this.setData({ 'post.contact': contact });
   },
 
   /**
@@ -306,7 +324,7 @@ Page({
           // 前端轻量拦截（与发布同一套词库）；云端 application 还有一道绝对防线
           const violation = constants.checkTextViolation(note);
           if (!violation.pass) {
-            wx.showToast({ title: '附言包含违规词汇，请修改', icon: 'none' });
+            wx.showToast({ title: constants.violationMessage('报名', violation.word), icon: 'none' });
             resolve(null);
             return;
           }
@@ -446,7 +464,9 @@ Page({
     } catch (err) {
       wx.hideLoading();
       console.error('[detail] 结束信息失败 code=' + (err && err.code) + '：', err);
-      wx.showToast({ title: (err && err.message) || '结束失败，请稍后重试', icon: 'none' });
+      // 云函数未部署时不把开发者文案招给用户
+      const msg = (err && err.code !== 'FUNCTION_CALL_FAILED' && err.message) || '结束失败，请稍后重试';
+      wx.showToast({ title: msg, icon: 'none' });
       return;
     }
 

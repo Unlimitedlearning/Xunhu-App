@@ -8,7 +8,7 @@
 - 技术栈：微信原生小程序（WXML / WXSS / JS，无构建工具）+ 微信云开发（云函数 + 云数据库）
 - 代码根目录：`D:\GithubProgram\XunHu`
 - 云环境 ID：`utils/constants.js` → `CLOUD_ENV`（`cloud1-d3g0izqlv27c2ee8d`）
-- 当前形态：内测版本，10 个云函数 / 6 个集合 / 7 个页面
+- 当前形态：内测版本，11 个云函数 / 7 个集合 / 7 个页面
 
 ---
 
@@ -47,8 +47,9 @@ app.js                     启动：wx.cloud.init(CLOUD_ENV) + store.init() 预�
 
 | 集合 | 客户端权限 | 写入方 |
 |---|---|---|
-| `posts` | 所有用户可读，仅创建者可读写 | `publish`（新建）/ `heat`（热度）/ `report`（转审核）/ `admin`（下架·恢复）/ 本人 `endPost`（结束） |
-| `applications` | 自定义规则 `doc._openid == auth.openid \|\| doc.receiverId == auth.openid`（**write 建议置 false**） | 仅 `application` 云函数 |
+| `posts` | 所有用户可读（**write = false**，客户端不得写） | `publish`（新建）/ `heat`（热度）/ `report`（转审核）/ `admin`（下架·恢复）/ `post`（结束·删除） |
+| `post_contacts` | 所有用户不可读写 | 仅 `publish`（新建时写）/ `post`（按关系下发 · 迁移） |
+| `applications` | **所有用户不可读写**（读也走云函数，不再保留自定义 read 规则） | 仅 `application` 云函数 |
 | `users` | 所有用户不可读写 | 仅 `user` / `application`（联查读）/ `report`·`admin`（风控写） |
 | `reports` | 所有用户不可读写 | 仅 `report` / `admin` |
 | `reviews` | 所有用户不可读写 | 仅 `review` / `getAuthorProfile`（读） |
@@ -92,9 +93,9 @@ app.js                     启动：wx.cloud.init(CLOUD_ENV) + store.init() 预�
 | `本地快照（缓存先行 / 秒开）` | `hydrateFromCache`、`saveSnapshot`（`CACHE_POSTS` / `CACHE_APPLICATIONS`） |
 | `初始化` | `init()`：取 openid → 拉 posts / applications / profile |
 | `云函数封装` | 统一 `callFunction` + 业务错误码透传 |
-| `帖子 posts` | `syncPosts` / `getPosts` / `findPost` / `fetchPostById` / `savePost` / `removePost` / `endPost` |
+| `帖子 posts` | `syncPosts`（只拉最新 20 条）/ `getPosts` / `findPost` / `fetchPostById` / `fetchPostContact` / `savePost` / `endPost`（走云函数 `post`） |
 | `一人一帖` | `findMyActivePost` / `syncMyActivePost` |
-| `申请 applications` | `syncApplications`（拆两次 where 查询去重）、`addApplication`、`updateApplicationStatus` |
+| `申请 applications` | `syncApplications`（只走云函数 `application`，直读降级通道已删）、`addApplication`、`updateApplicationStatus` |
 | `热度 heat` / `热度防刷` | `resolveHeat` / `persistHeat`、`claimHeatOnce`（本地 `local_heat_history`） |
 | `个人资料` | `syncProfile` / `getProfile` / `saveProfile` / `isProfileReady` / `isAdmin` |
 | `举报` | `submitReport` |
@@ -107,7 +108,7 @@ app.js                     启动：wx.cloud.init(CLOUD_ENV) + store.init() 预�
 
 ---
 
-## 4. 核心云函数清单（`cloudfunctions/`，10 个）
+## 4. 核心云函数清单（`cloudfunctions/`，11 个）
 
 | 云函数 | action（入参 `event.action`） | 负责什么 | 关键拦截 |
 |---|---|---|---|
@@ -117,9 +118,10 @@ app.js                     启动：wx.cloud.init(CLOUD_ENV) + store.init() 预�
 | `heat` | `{ postId }` | 帖子热度原子自增 `_.inc` | 单次 `MAX_DELTA = 5` 防刷；管理员预览不加热度 |
 | `publish` | 无（单一入口） | 发布唯一写入口：词库校验 + 可选机审 → 直接写 `status:'active'`；`authorOpenid` / `authorName` / `status` 由服务端决定 | 违禁词（绝对防线）、一人一帖 `ALREADY_HAS_ACTIVE`、`role==='banned'` 拒发、机审 `CONTENT_RISKY` |
 | `application` | `apply` / `updateStatus` / `list` | 申请流转**唯一入口**：提交申请（附言必填）、同意/拒绝、联查 posts + users 下发列表 | `receiverId === openid` 才能改状态；`pending/rejected` 永不下发联系方式与完整学号 |
-| `report` | 无（单一入口） | 举报落库 + `posts.reportWeight +1`（同一举报人不重复加权）+ 自动审查 / 自动封禁 | 禁举报自己；`reportWeight ≥ 3` → `auditing` 且 `warningCount +1`；`warningCount ≥ 2` → `role='banned'`；`auditDismissed` 者不重复扣警告 |
+| `report` | 无（单一入口） | 举报落库 + `posts.reportWeight +1`（同一举报人不重复加权）+ 自动审查 / 自动封禁 | 禁举报自己；`reportWeight ≥ 5` → `auditing` 且 `warningCount +1`；`warningCount ≥ 3` → `role='banned'`（只标记 + `banSource/banTime` 留痕，**不切断前端**）；`auditDismissed` 者不重复扣警告 |
 | `review` | `submit` / `get` / `mine` / `received` | 双向评价唯一读写入口：提交（只 `add` 不 update）、查重、我发出的、我收到的匿名统计 | 禁自评、`rating` 只能 1/0、必须有 accepted 申请关系、帖子必须 `ended`、同帖同人唯一 `ALREADY_REVIEWED`、评价正文违禁词 |
 | `getAuthorProfile` | 无（`{ postId }` 或 `{ authorOpenid }`） | 详情页「发布者名片」：一次返回 `users` 简历 + `reviews` 匿名统计与最近 3 条 | 用 `postId` 反查真实 `authorOpenid`（不信客户端），字段白名单，不下发 openid / 联系方式 / 学号 |
+| `post` | `end` / `delete` / `contact` / `migrateContacts` | 帖子状态唯写入口（结束 / 删除）+ 联系方式按关系下发 + 历史 contact 迁移 | 服务端校 `authorOpenid === openid`，`end` 只写 `status/endTime`；`contact` 仅作者或 accepted 申请人可见 |
 | `admin` | `getReports` / `ignore` / `violate` / `searchUser` / `unbind` | 管理后台：待处理举报列表、忽略（恢复上线）、确认违规（下架 + 警告）、按学号查人、强制解绑学号 | 每个 action 先校验 `users.role === 'admin'`，否则 `FORBIDDEN`；破坏性操作写 `admin_logs` |
 
 **阈值与文案的三方同步点**（改一处必须同步全部）：
@@ -128,12 +130,13 @@ app.js                     启动：wx.cloud.init(CLOUD_ENV) + store.init() 预�
 
 ---
 
-## 5. 数据集合字典（6 个）
+## 5. 数据集合字典（7 个）
 
 | 集合 | 存什么 | 关键字段 | 客户端权限 |
 |---|---|---|---|
-| `posts` | 所有寻呼 / 组队 / 自荐 / 搭子帖子（大厅数据源） | `_id`(=帖子 id) / `category` / `title` / `content` / `tags[]` / `contact` / `authorOpenid` / `authorName` / `status`(draft·auditing·active·ended) / `heat` / `reportWeight` / `auditDismissed` / `secCheck` / `createTime` / `endTime` | 所有用户可读，仅创建者可读写 |
-| `applications` | 报名（申请）流水：谁申请了哪个帖子、当前状态 | `postId` / `applicantId` / `receiverId` / `applicantName` / `applyNote` / `status`(pending·accepted·rejected) / `createTime` / `statusUpdateTime` | 自定义规则（本人申请或本人收到的），write 应置 false |
+| `posts` | 所有寻呼 / 组队 / 自荐 / 搭子帖子（大厅数据源） | `_id`(=帖子 id) / `category` / `title` / `content` / `tags[]` / `authorOpenid` / `authorName` / `status`(draft·auditing·active·ended) / `heat` / `reportWeight` / `auditDismissed` / `secCheck` / `createTime` / `endTime`（**无 `contact`**） | 所有用户可读，write = false |
+| `post_contacts` | 帖子联系方式（v1.3.0 从 posts 拆出） | `_id`(=postId) / `_openid` / `authorOpenid` / `contact` / `createTime` | 所有用户不可读写（仅云函数 `publish` / `post`） |
+| `applications` | 报名（申请）流水：谁申请了哪个帖子、当前状态 | `postId` / `applicantId` / `receiverId` / `applicantName` / `applicantResume` / `applyNote` / `status`(pending·accepted·rejected) / `createTime` / `statusUpdateTime`（**新文档不存 `applicantContact` / `applicantStudentId`**） | 所有用户不可读写 |
 | `users` | 用户资料与账号状态（一个 openid 一条） | `_openid` / `nickname` / `studentId` / `resume` / `contact` / `role`(user·banned·admin) / `warningCount` / `createTime` / `updateTime` | 所有用户不可读写 |
 | `reviews` | 双向评价记录（一次合作一条，提交后不可改） | `reviewId`(= reviewer_post_reviewee) / `postId` / `reviewerOpenid` / `revieweeOpenid` / `rating`(1 满意·0 不满意) / `content` / `createTime` | 所有用户不可读写 |
 | `reports` | 举报工单（谁举报了哪个帖子、原因、处理状态） | `postId` / `reporterOpenid` / `reason` / `desc` / `status`(pending…) / `postSnapshot` / `createTime` | 所有用户不可读写 |
@@ -251,6 +254,7 @@ app.js                     启动：wx.cloud.init(CLOUD_ENV) + store.init() 预�
 | `pages/publish/publish.js` | 284 | 发布页 |
 | `cloudfunctions/getAuthorProfile/index.js` | 238 | 发布者名片 |
 | `pages/index/index.js` | 236 | 大厅 |
+| `cloudfunctions/post/index.js` | 325 | 帖子状态唯写入口：结束 / 删除 / 联系方式 |
 | `cloudfunctions/initDb/index.js` | 64 | 建集合 / 自检 |
 | `cloudfunctions/heat/index.js` | 45 | 热度 |
 | `cloudfunctions/login/index.js` | 15 | openid |

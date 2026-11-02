@@ -5,9 +5,10 @@
 //   1) 读：先 await syncPosts() / syncApplications() 把云数据刷进缓存，再用同步的
 //      getPosts() / findPost() / getApplications() 渲染。这样页面只加一行 await，
 //      渲染逻辑（排序、兜底、掩码）完全不用改。
-//   2) 写：savePost / removePost / addApplication / updateApplicationStatus / persistHeat / submitReport / submitReview
+//   2) 写：savePost / endPost / addApplication / updateApplicationStatus / persistHeat / submitReport / submitReview
 //      都返回 Promise，调用处必须 await。
 //   3) 热度：走云函数 heat 做原子自增（别人的帖子客户端没有写权限，必须走服务端）。
+//   4) 帖子状态（结束 / 删除）走云函数 post，posts 对客户端只读（v1.3.0）
 //   4) 发布：走云函数 publish（内容安全机审 + status 直接 active，服务端定 status/authorName）；
 //      举报：走云函数 report（写 reports 集合 + 帖子改 auditing）；
 //      申请：走云函数 application（apply / updateStatus / list，服务端校验 receiverId 防越权，
@@ -73,9 +74,11 @@ async function fetchOpenid() {
 
 // 分页把集合读全（客户端单次 20 条上限）
 // condition 不为空时会带上 where —— 自定义安全规则的集合必须靠它证明「这条记录我能读」
-async function fetchPaged(name, condition) {
+// maxFetch：本次最多拉多少条（默认 MAX_FETCH）。posts 已降到 POSTS_FETCH_LIMIT=20，见 pullPosts。
+async function fetchPaged(name, condition, maxFetch) {
+  const stop = Math.min(maxFetch || MAX_FETCH, MAX_FETCH);
   const list = [];
-  for (let skip = 0; skip < MAX_FETCH; skip += PAGE_SIZE) {
+  for (let skip = 0; skip < stop; skip += PAGE_SIZE) {
     let query = col(name);
     if (condition) query = query.where(condition);
     const res = await query
@@ -90,15 +93,10 @@ async function fetchPaged(name, condition) {
   return list;
 }
 
-// 简化权限（所有用户可读）的集合：无条件全量读
-function fetchAll(name) {
-  return fetchPaged(name, null);
-}
-
-// -502003 的两种典型原因，直接把排查方向打到控制台，省得靠猜
+// -502003 的典型原因，直接把排查方向打到控制台，省得靠猜
+// （applications 已改为「客户端不可读」，不再有直读分支，因此这里只剩 posts）
 const PERMISSION_HINTS = {
-  posts: '-502003：①集合不在 CLOUD_ENV 指向的环境里（最常见：控制台建集合的环境和 constants.js 的 env 不是同一个）②posts 权限没生效，应为「所有用户可读，仅创建者可读写」',
-  applications: '-502003：applications 是自定义安全规则，客户端查询必须带 where 证明可读（本条已按 _openid / receiverId 拆成两次查询）；仍失败请确认规则已保存，且没有把 read 写成 false'
+  posts: '-502003：①集合不在 CLOUD_ENV 指向的环境里（最常见：控制台建集合的环境和 constants.js 的 env 不是同一个）②posts 权限没生效，应为「所有用户可读」'
 };
 
 function reportFetchError(name, err) {
@@ -125,12 +123,21 @@ async function diagnose(reason) {
 
 /* ---------------- 字段规范化 ---------------- */
 
+// 【P0-1 修复】id 必须双兜底：doc._id || doc.id
+// 原因：写本地快照时存的是「已归一化」的帖子（只有 id，没有 _id），下一次冷启动
+// hydrateFromCache() 拿快照再 map(normalizePost) 时 doc._id 是 undefined，
+// 单写 id: doc._id 会把这个 undefined 覆盖掉原本的 id —— 于是大厅卡片 data-id 为空，
+// 点进去变成 detail?id=undefined（「信息不存在」）。authorOpenid 同款双兜底。
 function normalizePost(doc) {
-  return Object.assign({}, doc, {
-    id: doc._id,
-    tags: Array.isArray(doc.tags) ? doc.tags : [],
-    heat: typeof doc.heat === 'number' ? doc.heat : 0,
-    authorOpenid: doc.authorOpenid || doc._openid || ''
+  const raw = doc || {};
+  return Object.assign({}, raw, {
+    id: raw._id || raw.id || '',
+    // status 统一成字符串：缺失 -> ''（页面按「老文档缺字段」兜底），
+    // 但绝不把未知值改写成 active —— 状态判定只由页面 formatPost / 云函数负责
+    status: String(raw.status || ''),
+    tags: Array.isArray(raw.tags) ? raw.tags : [],
+    heat: typeof raw.heat === 'number' ? raw.heat : 0,
+    authorOpenid: raw.authorOpenid || raw._openid || ''
   });
 }
 
@@ -231,9 +238,11 @@ function hydrateFromCache() {
 /* ---------------- 初始化 ---------------- */
 
 // 只拉数据、不触发 ensureInit，避免与 doInit 互相递归
-async function pullPosts() {
+// maxFetch 默认 POSTS_FETCH_LIMIT=20（内测降本：1 次 get 就够），
+// 需要更多时（比如后台排查）传 { max: 100 }，仍然受 MAX_FETCH 封顶。
+async function pullPosts(maxFetch) {
   try {
-    const rows = await fetchAll(COLLECTIONS.POSTS);
+    const rows = await fetchPaged(COLLECTIONS.POSTS, null, maxFetch || constants.POSTS_FETCH_LIMIT);
     cache.posts = rows
       .map(normalizePost)
       .sort(function (a, b) { return (b.createTime || 0) - (a.createTime || 0); });
@@ -245,8 +254,10 @@ async function pullPosts() {
   }
 }
 
-/* 删除说明：旧的「两次 where 直读」实现已搬到下方 applications 区块的 pullApplicationsDirect()，
-   作为「application 云函数未部署」时的降级通道；列表主通道现在是云函数（要联查 users）。 */
+/* 删除说明（v1.3.0）：旧的「两次 where 直读 applications」降级通道已彻底删除。
+   原因：那条通道让客户端直接读 applications 文档，pending 状态下就能拿到申请人
+   联系方式与完整学号 —— 云函数里做的脱敏被绕过。现在 applications 权限设为
+   「所有用户不可读写」，读取与写入全部收拢到 cloudfunctions/application。*/
 
 async function seedDemoData() {
   const posts = (mockData && mockData.postList) || [];
@@ -435,15 +446,22 @@ async function fetchPostById(postId) {
 }
 
 /* ---------------- 一人一帖 ----------------
-   业务规则：同一用户同时只允许存在一条 status === 'active' 的帖子。
+   业务规则：同一用户同时只允许存在一条「占用发帖名额」的帖子 ——
+   active（进行中）与 auditing（审查中）都占名额，ended 不占（口径「四、帖子状态机」）。
    这里只查内存缓存（同步），页面点 + 号 / 发布时先用它做体验层拦截；
    云函数 publish 里还有一道查重（ALREADY_HAS_ACTIVE），那才是改包也绕不过的防线。*/
+
+const QUOTA_STATUS_LIST = ['active', 'auditing'];
+
+function isQuotaStatus(status) {
+  return QUOTA_STATUS_LIST.indexOf(String(status || '')) > -1;
+}
 
 function findMyActivePost() {
   const openid = cache.openid;
   if (!openid) return null;
   return cache.posts.find(function (item) {
-    return item.authorOpenid === openid && item.status === 'active';
+    return item.authorOpenid === openid && isQuotaStatus(item.status);
   }) || null;
 }
 
@@ -454,9 +472,9 @@ async function syncMyActivePost() {
   return findMyActivePost();
 }
 
-async function syncPosts() {
+async function syncPosts(options) {
   await ensureInit();
-  return pullPosts();
+  return pullPosts(options && options.max);
 }
 
 // 新增帖子：走云函数 publish。
@@ -492,42 +510,57 @@ async function savePost(post) {
   };
 }
 
-async function removePost(postId) {
-  if (!postId) return;
-  await ensureInit();
-  await col(COLLECTIONS.POSTS).doc(postId).remove();
-  await pullPosts();
+/* ---------------- 帖子状态写入（全部走云函数 post） ----------------
+   v1.3.0（P0-4）：以前 endPost 是客户端 doc(id).update({ status: 'ended' })，
+   靠的只是「posts 仅创建者可读写」—— 安全规则只判断「是不是你这条」，不限制「能改哪些字段」，
+   于是作者可以自己把 auditing 改回 active（撤销举报审查）、改 heat、改 title/content。
+   现在改为：posts 对客户端只读（write=false），状态变更只能走 cloudfunctions/post，
+   服务端校验 authorOpenid === 当前 openid，并且只写 status / endTime 这两个字段。*/
+
+// 统一调用 post 云函数（结束 / 删除 / 取联系方式）
+async function callPostFunction(data) {
+  let res;
+  try {
+    res = await wx.cloud.callFunction({ name: CLOUD_FUNCTIONS.POST, data: data });
+  } catch (err) {
+    const wrapped = new Error('post 云函数调用失败，请确认已上传并部署');
+    wrapped.code = 'FUNCTION_CALL_FAILED';
+    wrapped.cause = err;
+    throw wrapped;
+  }
+
+  const result = (res && res.result) || {};
+  if (!result.ok) {
+    const err = new Error(result.message || '操作失败，请稍后重试');
+    err.code = result.code || 'POST_ACTION_FAILED';
+    throw err;
+  }
+  return result;
 }
 
 /**
- * 结束自己的帖子：status -> 'ended' + 记录 endTime（结束时间）
- * 为什么客户端直接写数据库就行：posts 权限是「所有用户可读，仅创建者可读写」，
- * 云函数 publish 写入时已显式带上 _openid，所以只有发帖人本人能改自己这一条，改别人的会被安全规则拒绝。
+ * 结束自己的帖子：status -> 'ended' + endTime（云端校验作者身份，客户端不再直写）
  * @return {number} endTime 时间戳
  */
 async function endPost(postId) {
   if (!postId) throw new Error('缺少帖子 ID');
   await ensureInit();
 
-  const now = Date.now();
+  let result;
   try {
-    await col(COLLECTIONS.POSTS).doc(postId).update({
-      data: { status: 'ended', endTime: now }
-    });
+    result = await callPostFunction({ action: 'end', postId: postId });
   } catch (err) {
-    console.error('[store] 结束帖子失败 code=' + ((err && (err.errCode || err.code)) || '') + '：', err);
-    // 常见原因：不是本人发的（安全规则拒绝）、帖子已被删除、网络/环境异常
-    const wrapped = new Error('结束失败，请稍后重试');
-    wrapped.code = 'END_POST_FAILED';
-    wrapped.cause = err;
-    throw wrapped;
+    console.error('[store] 结束帖子失败 code=' + ((err && err.code) || '') + '：', err);
+    throw err;
   }
+
+  const endTime = Number(result.endTime) || Date.now();
 
   // 同步内存缓存：详情页返回大厅时（onShow 之前）也不会渲染成「进行中」
   const cached = cache.posts.find(function (item) { return item.id === postId; });
   if (cached) {
     cached.status = 'ended';
-    cached.endTime = now;
+    cached.endTime = endTime;
   }
 
   try {
@@ -536,7 +569,24 @@ async function endPost(postId) {
     console.warn('[store] 结束后重新拉取帖子失败，已用本地缓存兜底：', err);
   }
 
-  return now;
+  return endTime;
+}
+
+/**
+ * 取帖子联系方式（详情页作者本人需要看自己填的联系方式）：
+ * contact 已从 posts 迁到 post_contacts（客户端零权限），只能由云函数按关系下发。
+ * 非作者、也没有 accepted 申请的一律返回空串（云端兜底）。
+ * @return {Promise<string>} 联系方式（拿不到就空串，不抛错）
+ */
+async function fetchPostContact(postId) {
+  if (!postId) return '';
+  try {
+    const result = await callPostFunction({ action: 'contact', postId: postId });
+    return String(result.contact || '');
+  } catch (err) {
+    console.warn('[store] 获取联系方式失败（按空处理）：', err);
+    return '';
+  }
 }
 
 /* ---------------- 申请 applications（读与写全部走云函数 application） ----------------
@@ -597,33 +647,12 @@ function getApplicationsError() {
 }
 
 /**
- * 降级通道：云函数没部署 / 调用失败时，退回原来的两次 where 直读。
- * 为什么保留：内测阶段真机上云函数没部署是常见事故，这里至少保证「同意 / 拒绝以外的
- * 列表功能」不白屏。降级模式下拿不到附言与申请人简历（那需要 users 联查）。
+ * 拉申请列表：唯一通道是云函数 application（联查 posts + users 后脱敏下发）。
+ * 【v1.3.0】已删除 pullApplicationsDirect() 直读降级通道：
+ *   applications 现在设为「所有用户不可读写」，客户端连 where 查询都不允许；
+ *   而且降级模式看不到附言 / 姓名 / 简历，体验价值远低于「pending 就能直接拿到申请人
+ *   联系方式与完整学号」的隐私风险。云函数未部署时宁可报错让用户下拉重试。
  */
-async function pullApplicationsDirect() {
-  const openid = await fetchOpenid();
-  const result = await Promise.all([
-    fetchPaged(COLLECTIONS.APPLICATIONS, { _openid: openid }),
-    fetchPaged(COLLECTIONS.APPLICATIONS, { receiverId: openid })
-  ]);
-
-  // 两条查询可能重叠，按 _id 去重
-  const seen = {};
-  const rows = [];
-  result[0].concat(result[1]).forEach(function (doc) {
-    if (!doc || !doc._id || seen[doc._id]) return;
-    seen[doc._id] = true;
-    rows.push(doc);
-  });
-
-  cache.applications = rows
-    .map(normalizeApplication)
-    .sort(function (a, b) { return (b.createTime || 0) - (a.createTime || 0); });
-  writeSnapshot(STORAGE_KEYS.CACHE_APPLICATIONS, cache.applications);
-  return cache.applications;
-}
-
 async function pullApplications() {
   try {
     const result = await callApplicationFunction({ action: 'list' });
@@ -635,17 +664,7 @@ async function pullApplications() {
     writeSnapshot(STORAGE_KEYS.CACHE_APPLICATIONS, cache.applications); // 缓存先行：落盘快照
     return cache.applications;
   } catch (err) {
-    console.error('[store] application 云函数拉取失败（是否已上传并部署 cloudfunctions/application？），' +
-      '改用直读数据库降级（降级模式看不到申请附言与申请人简历）：', err);
-  }
-
-  // 降级：云函数不可用时直读（read 规则仍保留，不影响列表展示）
-  try {
-    const list = await pullApplicationsDirect();
-    cache.applicationsError = null;
-    return list;
-  } catch (err) {
-    reportFetchError(COLLECTIONS.APPLICATIONS, err);
+    console.error('[store] application 云函数拉取失败（是否已上传并部署 cloudfunctions/application？）：', err);
     cache.applicationsError = err;
     throw err;
   }
@@ -1240,6 +1259,12 @@ function isAdmin() {
   return !!(cache.profile && String(cache.profile.role || '').toLowerCase() === 'admin');
 }
 
+// 当前用户是不是受罚者（role === 'banned'）：前端只用于入口拦截（详情 / 发布 / 申请 / 评价 / 举报），
+// 真正的拦截在各云函数（publish / review / application / report 各自查 users.role）。
+function isBanned() {
+  return String((cache.profile && cache.profile.role) || '').toLowerCase() === 'banned';
+}
+
 /* ---------------- 管理后台（云函数 admin） ----------------
    reports / users 对客户端「所有用户不可读写」，因此后台的列表、搜索、惩罚全部只能走云函数；
    客户端只负责把结果渲染成卡片。role === 'admin' 的校验在云函数第一行，前端藏按钮只是体验层。*/
@@ -1391,9 +1416,9 @@ module.exports = {
   getPosts,
   findPost,
   fetchPostById,
+  fetchPostContact,
   syncPosts,
   savePost,
-  removePost,
   endPost,
   findMyActivePost,
   syncMyActivePost,
@@ -1439,6 +1464,8 @@ module.exports = {
 
   // 管理后台（云函数 admin，仅 role === 'admin' 可用）
   isAdmin,
+  // 受罚者（role === 'banned'）：入口拦截用
+  isBanned,
   fetchAdminReports,
   adminHandleReport,
   adminSearchUser,

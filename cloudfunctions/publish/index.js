@@ -4,7 +4,7 @@
 // 风控体系（个人主体拿不到机审权限 48001，所以本地词库才是主防线）：
 //   第一层 前端轻量拦截：pages/publish 用同一份词库 + 同一套净化匹配，体验上即时提示
 //   第二层 云端绝对防线（这里）：写入前重新拼全文（title + content + tags + contact）再校一遍，
-//          客户端改包、直接调云函数都绕不过；文案统一「内容包含违规信息」
+//          客户端改包、直接调云函数都绕不过；文案统一「发布失败：包含违规词汇【xxx】，请修改后重试。」
 //   第三层 微信机审 msgSecCheck（能调就调，失败降级放行，见 SEC_CHECK_FAIL_OPEN）
 //   第四层 上线后被举报 -> report 云函数把 status 改回 'auditing'（大厅打码、不可点入）
 //
@@ -26,6 +26,10 @@ const cloud = require('wx-server-sdk');
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 
 const POSTS = 'posts';
+// 联系方式单独存放（v1.3.0 / P0-2）：posts 是所有用户可读的，contact 写在这里
+// 等于把全站同学的微信号 / 手机号公开给任何抓包的人。现在只存 post_contacts
+// （_id = postId，客户端「所有用户不可读写」），由 cloudfunctions/post 按关系下发。
+const POST_CONTACTS = 'post_contacts';
 const USERS = 'users';
 
 const CATEGORIES = ['team', 'resume', 'partner'];
@@ -110,10 +114,13 @@ const RISKY_ERR_CODES = ['87014'];
 const SEC_CHECK_FAIL_OPEN = true;
 
 const RISKY_MESSAGE = '您发布的内容涉嫌违规，请修改后重试';
-// 本地词库命中时的统一文案（前端「轻量拦截」对应，这里是绕不过的绝对防线）
-const LOCAL_RISKY_MESSAGE = '内容包含违规信息';
+// 本地词库命中时的统一文案（口径「十一」句式：动作 + 失败 + 具体违规词）
+function localRiskyMessage(word) {
+  return '发布失败：包含违规词汇' + (word ? '【' + word + '】' : '') + '，请修改后重试。';
+}
 // 一人一帖：与小程序端 constants.ACTIVE_POST_LIMIT_MESSAGE 保持同一份文案
-const ACTIVE_LIMIT_MESSAGE = '您已有一条进行中的信息，请先结束后再发布新信息。';
+// active（进行中）与 auditing（审查中）都占用名额，ended 不占
+const ACTIVE_LIMIT_MESSAGE = '您已有寻呼中或审查中的信息，请先结束后再发布新信息。';
 // 账号被封禁（users.role === 'banned'）时的统一文案，与 cloudfunctions/review 同值
 const BANNED_MESSAGE = '您的账号因违规已被限制使用';
 
@@ -125,6 +132,45 @@ function isMissingCollection(err) {
   const code = errCodeOf(err);
   const message = String((err && err.message) || '');
   return code === '-502005' || message.indexOf('not exist') > -1;
+}
+
+/**
+ * 把联系方式写进 post_contacts（_id = postId，客户端零权限）
+ * 失败返回 false：调用方会回收刚创建的帖子，避免出现「帖子在、但申请人永远看不到联系方式」
+ */
+async function saveContact(db, postId, openid, contact, createTime) {
+  const data = {
+    _openid: openid,
+    postId: String(postId),
+    authorOpenid: openid,
+    contact: contact,
+    createTime: createTime
+  };
+
+  try {
+    await db.collection(POST_CONTACTS).doc(String(postId)).set({ data: data });
+    return true;
+  } catch (err) {
+    if (!isMissingCollection(err)) {
+      console.error('[publish] 写入 post_contacts 失败 postId=' + postId +
+        ' code=' + errCodeOf(err) + '：', err);
+      return false;
+    }
+  }
+
+  // 集合不存在：建一次后重试（安全规则仍需控制台设置为「所有用户不可读写」）
+  try {
+    await db.createCollection(POST_CONTACTS);
+  } catch (err) {
+    // 已存在属正常情况
+  }
+  try {
+    await db.collection(POST_CONTACTS).doc(String(postId)).set({ data: data });
+    return true;
+  } catch (retryErr) {
+    console.error('[publish] 建集合后仍写入 post_contacts 失败 postId=' + postId + '：', retryErr);
+    return false;
+  }
 }
 
 /* ---------------- 内容安全机审 ---------------- */
@@ -328,16 +374,18 @@ exports.main = async (event) => {
     return { ok: false, code: 'PROFILE_NOT_READY', message: '请先在「我的」页面填写联系方式后再发布' };
   }
 
-  // 3. 一人一帖：同一用户同时只允许一条 active（进行中）的帖子
+  // 3. 一人一帖：同一用户同时只允许一条「占用名额」的帖子
+  //    active（进行中）与 auditing（审查中）都占名额，ended 不占（口径「四、帖子状态机」）
   //    前端在「大厅 + 号」和「发布按钮」上已拦过一道，但客户端能改包绕过，这里才是绝对防线
   try {
+    const _ = db.command;
     const dedupe = await db.collection(POSTS)
-      .where({ authorOpenid: openid, status: 'active' })
+      .where({ authorOpenid: openid, status: _.in(['active', 'auditing']) })
       .limit(1)
       .get();
     const existed = (dedupe && dedupe.data) || [];
     if (existed.length) {
-      console.log('[publish] 一人一帖拦截，已有 active 帖子：', existed[0]._id);
+      console.log('[publish] 一人一帖拦截，已有占用名额的帖子（active / auditing）：', existed[0]._id);
       return {
         ok: false,
         code: 'ALREADY_HAS_ACTIVE',
@@ -347,7 +395,7 @@ exports.main = async (event) => {
     }
   } catch (err) {
     if (isMissingCollection(err)) {
-      // posts 集合还不存在，那肯定没有 active 帖子，放行（写入时会自动建集合）
+      // posts 集合还不存在，那肯定没有占名额的帖子，放行（写入时会自动建集合）
       console.warn('[publish] posts 集合不存在，跳过一人一帖查重');
     } else {
       // 查重失败时不放行：宁可让用户重试一次，也不能破「一人一帖」这条业务红线
@@ -369,7 +417,7 @@ exports.main = async (event) => {
     return {
       ok: false,
       code: 'CONTENT_RISKY',
-      message: LOCAL_RISKY_MESSAGE,
+      message: localRiskyMessage(violation.word),
       hitWord: violation.word,
       hitType: violation.type,
       field: 'fullText'
@@ -398,7 +446,7 @@ exports.main = async (event) => {
   // 6. 全部校验通过 -> 直接上线
   const now = Date.now();
   const doc = {
-    // 显式写 _openid：posts 权限是「仅创建者可读写」，靠它认主（服务端写入，客户端伪造不了）
+    // 显式写 _openid：历史规则与控制台排查都靠它认主（服务端写入，客户端伪造不了）
     _openid: openid,
     category: category,
     title: title,
@@ -406,7 +454,8 @@ exports.main = async (event) => {
     tags: tags,
     authorOpenid: openid,
     authorName: authorName,
-    contact: contact,
+    // 【P0-2】contact 不写这里：posts 对所有用户可读，写在这就是全站隐私泄露。
+    // 联系方式落 post_contacts（_id = postId，客户端零权限），见下方 saveContact()
     status: 'active', // 机审通过即上线（进行中）
     heat: 0,
     reportWeight: 0, // 举报权重（v1.2.0 风控）：新帖子从 0 开始，每条新举报 +1
@@ -423,6 +472,17 @@ exports.main = async (event) => {
 
   try {
     const res = await db.collection(POSTS).add({ data: doc });
+    const saved = await saveContact(db, res._id, openid, contact, now);
+    if (!saved) {
+      // 联系方式没落库：这条帖子对申请人毫无意义，直接回收，不留脏数据
+      try {
+        await db.collection(POSTS).doc(res._id).remove();
+      } catch (removeErr) {
+        console.error('[publish] 回收无联系方式的帖子失败 id=' + res._id + '：', removeErr);
+      }
+      return { ok: false, code: 'CONTACT_SAVE_FAILED', message: '发布失败，请稍后重试' };
+    }
+    console.log('[publish] 发布成功 id=' + res._id + ' openid=' + openid);
     return {
       ok: true,
       id: res._id,
@@ -440,6 +500,10 @@ exports.main = async (event) => {
       try {
         await db.createCollection(POSTS);
         const retry = await db.collection(POSTS).add({ data: doc });
+        const saved = await saveContact(db, retry._id, openid, contact, now);
+        if (!saved) {
+          return { ok: false, code: 'CONTACT_SAVE_FAILED', message: '发布失败，请稍后重试' };
+        }
         return { ok: true, id: retry._id, status: doc.status, authorName: authorName, contact: contact, secChecked: !!secCheckResult.checked };
       } catch (retryErr) {
         return {

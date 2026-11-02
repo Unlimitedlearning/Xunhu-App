@@ -25,6 +25,8 @@
 // 隐私红线（与 store / task 页一致）：
 //   pending / rejected 的申请，**永远不下发**对方的联系方式与完整学号；
 //   只有 accepted 才给（此时业务上双方本来就要互相联系）。
+// 【v1.3.0 / P0-3】申请文档里不再存联系方式与完整学号（以前 pending 就写进去了，
+//   一旦 applications 能被客户端直读，隐私就裸奔）；accepted 时一律现查 users 下发。
 
 const cloud = require('wx-server-sdk');
 
@@ -32,6 +34,8 @@ cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 
 const APPLICATIONS = 'applications';
 const POSTS = 'posts';
+// 发帖人联系方式单独存放在这里（v1.3.0）：_id = postId，客户端「所有用户不可读写」
+const POST_CONTACTS = 'post_contacts';
 const USERS = 'users';
 
 const STATUS_PENDING = 'pending';
@@ -293,7 +297,39 @@ async function loadPosts(db, postIds) {
   return map;
 }
 
+/**
+ * 批量读发帖人联系方式（v1.3.0 / P0-2）
+ * contact 已从 posts 迁到 post_contacts（客户端零权限），只能服务端读；
+ * 只给「我发出的、且已同意」的申请用，其它一律不下发。
+ * 老帖子还没迁移时回退到 post.contact（调用方自己兜底）。
+ */
+async function loadContacts(db, postIds) {
+  const map = {};
+  const ids = uniq(postIds);
+  if (!ids.length) return map;
+
+  // 分批 20 条，避免 in 过长
+  for (let i = 0; i < ids.length; i += 20) {
+    const chunk = ids.slice(i, i + 20);
+    try {
+      const res = await db.collection(POST_CONTACTS).where({ _id: db.command.in(chunk) }).limit(20).get();
+      ((res && res.data) || []).forEach(function (doc) {
+        if (doc && doc._id) map[doc._id] = String(doc.contact || '');
+      });
+    } catch (err) {
+      if (!isMissingCollection(err)) {
+        console.warn('[application] 读 post_contacts 失败 code=' + errCodeOf(err) + '：', err && err.message);
+      }
+      return map; // 集合还不存在：全部走 post.contact 兜底
+    }
+  }
+
+  return map;
+}
+
 // 申请人资料（申请快照优先，缺字段再用 users 里的最新值补）
+// 【P0-3】联系方式 / 学号不再信任文档快照（新文档根本不存），一律从 users 现查；
+// 老文档里残留的 applicantContact 只作最后的兼容兜底（该集合已对客户端不可读）。
 async function resolveApplicant(db, app) {
   const applicantOpenid = String((app && (app.applicantId || app._openid)) || '');
   const profiles = applicantOpenid ? await loadProfiles(db, [applicantOpenid]) : {};
@@ -303,8 +339,8 @@ async function resolveApplicant(db, app) {
     applicantOpenid: applicantOpenid,
     nickname: String(app.applicantName || profile.nickname || '').trim(),
     resume: String(app.applicantResume || profile.resume || '').trim(),
-    contact: String(app.applicantContact || profile.contact || '').trim(),
-    studentId: String(app.applicantStudentId || profile.studentId || '').trim()
+    contact: String(profile.contact || app.applicantContact || '').trim(),
+    studentId: String(profile.studentId || app.applicantStudentId || '').trim()
   };
 }
 
@@ -333,7 +369,7 @@ async function handleApply(db, openid, event) {
     return {
       ok: false,
       code: 'CONTENT_RISKY',
-      message: '申请附言包含违规词汇，请修改后重试',
+      message: '报名失败：包含违规词汇' + (violation.word ? '【' + violation.word + '】' : '') + '，请修改后重试。',
       hitWord: violation.word
     };
   }
@@ -384,14 +420,17 @@ async function handleApply(db, openid, event) {
   }
 
   const now = Date.now();
+  /* 【P0-3 隐私修复】文档里不再存 applicantContact / applicantStudentId 明文：
+     以前这些字段在 pending 状态就写进去了，只要 applications 还能被收帖人直读，
+     「同意后才可见」就是摆设。现在：
+       - 联系方式 / 学号一律在「同意」后由服务端现查 users 下发（users 对客户端零权限）；
+       - 文档里只留展示用的昵称 / 简历 / 附言快照，即使将来权限出现偏差也不泄露隐私。*/
   const snapshot = {
     postId: postId,
     postTitle: String(post.title || ''),
     postStatus: postStatus,
     applicantId: openid,
     applicantName: applicantName,
-    applicantContact: applicantContact,
-    applicantStudentId: applicantStudentId,
     applicantResume: applicantResume,
     applyNote: applyNote,
     receiverId: receiverId,
@@ -463,8 +502,8 @@ async function handleApply(db, openid, event) {
 
 /**
  * 同意后要立刻解锁的联系方式 / 学号（只在 accepted 时下发）
- * 顺带自愈历史脏数据：早期申请文档可能没存 applicantName / applicantContact，
- * 这里从 users 里补回并写进文档，下次任务页就不用再联查。
+ * 联系方式 / 学号一律从 users 现查（users 对客户端零权限），不再写回申请文档（见 P0-3）。
+ * 顺带自愈历史脏数据：早期文档可能没存 applicantName / applicantResume，这里补回。
  */
 async function buildDecisionPayload(db, app, status) {
   const applicant = await resolveApplicant(db, app);
@@ -479,12 +518,12 @@ async function buildDecisionPayload(db, app, status) {
     };
   }
 
-  // 自愈：只补空字段，绝不覆盖已有快照
+  // 自愈：只补空字段，绝不覆盖已有快照。
+  // 【P0-3】不再把联系方式 / 学号写回文档：它们只在 accepted 时现查 users 下发，
+  // 落库就又多一份明文（历史教训）。
   const patch = {};
   if (!app.applicantName && applicant.nickname) patch.applicantName = applicant.nickname;
   if (!app.applicantResume && applicant.resume) patch.applicantResume = applicant.resume;
-  if (!app.applicantContact && applicant.contact) patch.applicantContact = applicant.contact;
-  if (!app.applicantStudentId && applicant.studentId) patch.applicantStudentId = applicant.studentId;
 
   if (Object.keys(patch).length) {
     try {
@@ -602,7 +641,7 @@ async function handleUpdateStatus(db, openid, event) {
 
 /* ---------------- list：我发出的 + 我收到的（联查 posts / users） ---------------- */
 
-function buildSentItem(app, postMap) {
+function buildSentItem(app, postMap, contactMap) {
   const post = postMap[app.postId] || null;
   const status = String(app.status || STATUS_PENDING);
 
@@ -621,7 +660,10 @@ function buildSentItem(app, postMap) {
     createTime: Number(app.createTime) || 0,
     statusUpdateTime: Number(app.statusUpdateTime) || 0,
     // 只有 accepted 才下发发帖人联系方式（pending / rejected 一律空）
-    contact: status === STATUS_ACCEPTED && post ? String(post.contact || '') : ''
+    // 联系方式优先取 post_contacts（客户端读不到），老帖子未迁移时回退 post.contact
+    contact: status === STATUS_ACCEPTED && post
+      ? String(((contactMap || {})[app.postId]) || post.contact || '')
+      : ''
   };
 }
 
@@ -646,9 +688,9 @@ function buildReceivedItem(app, postMap, profileMap) {
     status: status,
     createTime: Number(app.createTime) || 0,
     statusUpdateTime: Number(app.statusUpdateTime) || 0,
-    // 联系方式 / 学号：只在 accepted 后给收帖人
-    applicantContact: isAccepted ? String(app.applicantContact || profile.contact || '') : '',
-    applicantStudentId: isAccepted ? String(app.applicantStudentId || profile.studentId || '') : ''
+    // 联系方式 / 学号：只在 accepted 后给收帖人；值一律现查 users（不依赖文档里的明文快照）
+    applicantContact: isAccepted ? String(profile.contact || app.applicantContact || '') : '',
+    applicantStudentId: isAccepted ? String(profile.studentId || app.applicantStudentId || '') : ''
   };
 }
 
@@ -687,8 +729,14 @@ async function handleList(db, openid) {
     return doc.applicantId || doc._openid;
   }));
 
+  // 发帖人联系方式（post_contacts）：只为「我发出的、已同意」的帖子读，别的一律不碰
+  const acceptedPostIds = sentDocs
+    .filter(function (doc) { return String(doc.status || '') === STATUS_ACCEPTED; })
+    .map(function (doc) { return String(doc.postId || ''); });
+  const contactMap = await loadContacts(db, acceptedPostIds);
+
   const sent = sentDocs
-    .map(function (doc) { return buildSentItem(doc, postMap); })
+    .map(function (doc) { return buildSentItem(doc, postMap, contactMap); })
     .sort(function (a, b) { return b.createTime - a.createTime; });
 
   const received = receivedDocs

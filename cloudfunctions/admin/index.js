@@ -28,9 +28,9 @@ const REPORTS = 'reports';
 const USERS = 'users';
 const ADMIN_LOGS = 'admin_logs';
 
-// 自动风控阈值（与 cloudfunctions/report 同值）
-const REPORT_WEIGHT_AUDIT_THRESHOLD = 3;
-const WARNING_BAN_THRESHOLD = 2;
+// 自动风控阈值（与 cloudfunctions/report、utils/constants.js 三处同值）
+const REPORT_WEIGHT_AUDIT_THRESHOLD = 5;
+const WARNING_BAN_THRESHOLD = 3;
 
 // 后台一次最多回多少条（举报积压时先看最新的，处理完再刷新）
 const REPORT_LIST_LIMIT = 100;
@@ -201,6 +201,9 @@ async function bumpUserWarning(db, userOpenid) {
 
   if (!banned && next >= WARNING_BAN_THRESHOLD && role !== ROLE_ADMIN) {
     data.role = 'banned';
+    // 与 cloudfunctions/report 一致：只标记状态 + 留痕，不切断前端（不清会话、不下线）
+    data.banSource = 'admin-violate';
+    data.banTime = data.updateTime;
     banned = true;
   }
 
@@ -445,7 +448,7 @@ async function handleViolate(db, adminOpenid, payload) {
     };
   }
 
-  // 自动封禁逻辑：人工确认违规必记一次警告（不依赖阈值），累计 >= 2 次即 banned
+  // 自动封禁逻辑：人工确认违规必记一次警告（不依赖阈值），累计 >= 3 次即 banned
   let warning = null;
   if (!alreadyViolated && authorOpenid) {
     warning = await bumpUserWarning(db, authorOpenid);

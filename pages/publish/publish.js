@@ -6,7 +6,7 @@
 //   第二层（云端）绝对防线：cloudfunctions/publish 写入前用同一套词库 + 净化正则再校一遍（真的拦截）
 // 状态流转：
 //   通过  -> 云端直接写 status: 'active'（进行中，大厅可见可点入）
-//   拦截  -> 不写库，表单保留，提示具体违规词 / 「内容包含违规信息」
+//   拦截  -> 不写库，表单保留，提示「发布失败：包含违规词汇【xxx】，请修改后重试。」
 //   网络/云端异常 -> 存本地草稿（status: 'draft'），下次进发布页可恢复
 
 const store = require("../../utils/store");
@@ -145,11 +145,12 @@ Page({
     const fullText = buildFullText(title, content, tags, contact);
     const violation = checkTextViolation(fullText);
     if (!violation.pass) {
-      wx.showToast({ title: '含违规词「' + violation.word + '」，请修改后重试', icon: 'none' });
+      // 口径「十四」统一文案：发布失败：包含违规词汇【xxx】，请修改后重试。
+      wx.showToast({ title: constants.violationMessage('发布', violation.word), icon: 'none' });
       return;
     }
 
-    // 4. 一人一帖：当前用户名下已有 status === 'active' 的帖子 -> 弹窗拦截
+    // 4. 一人一帖：当前用户名下已有占用名额的帖子（active 进行中 / auditing 审查中）-> 弹窗拦截
     //    这里只是体验层（能改包绕过），云函数 publish 内还有一道查重做绝对防线
     let activeMine = null;
     try {
@@ -215,11 +216,13 @@ Page({
 
       // 2. 违禁词 / 机审不通过：原地修改，不离开页面（云端标出了具体违规词就一并提示）
       if (err && err.code === 'CONTENT_RISKY') {
+        // 云端已按统一句式下发「发布失败：包含违规词汇【xxx】，请修改后重试。」；
+        // 旧版云端只回 hitWord 时，本地按同一句式补全
+        const cloudMessage = (err && err.message) || CONTENT_RISKY_MESSAGE;
+        const needCompose = !!(err && err.hitWord) && cloudMessage.indexOf('【') === -1;
         wx.showModal({
           title: '内容未通过审核',
-          content: err.hitWord
-            ? '内容含违规词「' + err.hitWord + '」，请修改后重试'
-            : (err.message || CONTENT_RISKY_MESSAGE),
+          content: needCompose ? constants.violationMessage('发布', err.hitWord) : cloudMessage,
           showCancel: false,
           confirmText: '去修改'
         });
@@ -243,7 +246,8 @@ Page({
       if (err && err.code === 'ACCOUNT_BANNED') {
         wx.showModal({
           title: '账号受限',
-          content: err.message || '您的账号因违规已被限制使用',
+          // 统一文案（含真实管理员邮箱）：云端旧副本只回短句，这里以前端常量为准
+          content: constants.BANNED_BLOCK_MESSAGE,
           showCancel: false,
           confirmText: '我知道了'
         });

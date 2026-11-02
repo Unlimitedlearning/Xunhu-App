@@ -1,14 +1,23 @@
 // cloudfunctions/initDb/index.js
-// 作用：创建 posts / applications / users / reviews / reports / admin_logs 六个集合。
+// 作用：创建 posts / post_contacts / applications / users / reviews / reports / admin_logs 七个集合。
 // 说明：客户端 SDK 没有 createCollection，只有服务端 SDK 有，所以必须放在云函数里跑一次。
 // 用法：右键本文件夹 → 上传并部署（云端安装依赖）→ 云开发控制台「云函数 - initDb - 测试」直接运行。
-//      安全规则不会自动建，建完集合还要去控制台给 reports / reviews / admin_logs 设「所有用户不可读写」。
+//      安全规则不会自动建，建完集合还要去控制台给 post_contacts / applications / users /
+//      reports / reviews / admin_logs 设「所有用户不可读写」，posts 设「所有用户可读」（写入仅云函数）。
 
 const cloud = require('wx-server-sdk');
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 
-const COLLECTIONS = ['posts', 'applications', 'users', 'reports', 'reviews', 'admin_logs'];
+const COLLECTIONS = [
+  'posts',
+  'post_contacts', // v1.3.0：帖子联系方式（_id = postId），客户端零权限
+  'applications',
+  'users',
+  'reports',
+  'reviews',
+  'admin_logs'
+];
 
 // 自检模式：客户端拉数据报 -502003 时调用，用服务端 SDK（不受安全规则限制）回报集合真实状态，
 // 用来区分「安全规则/权限问题」和「集合不在这个环境里」。

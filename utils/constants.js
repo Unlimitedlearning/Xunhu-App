@@ -17,6 +17,9 @@ const CLOUD_ENV = 'cloud1-d3g0izqlv27c2ee8d';
 // 云数据库集合名（initDb 云函数负责创建）
 const COLLECTIONS = {
   POSTS: 'posts',
+  // 帖子联系方式单独存放（v1.3.0 隐私修复）：_id = postId，客户端「所有用户不可读写」，
+  // 只有云函数按「作者本人 / 已同意申请」的关系裁剪下发。posts 文档里不再有 contact 字段。
+  POST_CONTACTS: 'post_contacts',
   APPLICATIONS: 'applications',
   USERS: 'users', // 用户资料：昵称 / 学号 / 简历 / 联系方式（一个 openid 一条）
   REPORTS: 'reports', // 举报记录：postId / reporterOpenid / reason / desc / status / createTime（客户端不直接读写）
@@ -35,7 +38,8 @@ const CLOUD_FUNCTIONS = {
   REVIEW: 'review',  // 评价：同一帖子同一被评价人唯一记录（查重后只 add），并回传匿名评价列表
   GET_AUTHOR_PROFILE: 'getAuthorProfile', // 详情页发布者名片：一次查 users 简历 + reviews 匿名统计
   ADMIN: 'admin',    // 管理后台：举报审查 / 学号申诉（校验 role === 'admin'）
-  APPLICATION: 'application' // 申请流转唯一入口：apply / updateStatus / list（越权拦截在服务端）
+  APPLICATION: 'application', // 申请流转唯一入口：apply / updateStatus / list（越权拦截在服务端）
+  POST: 'post'       // 帖子状态唯一写入口：end / delete / contact（服务端校验 authorOpenid）
 };
 
 // 分类：英文枚举 -> 中文
@@ -57,12 +61,29 @@ const POST_STATUS_MAP = {
   draft: '草稿',
   auditing: '审核中',
   active: '进行中',
-  ended: '已结束'
+  ended: '已结束',
+  // 违规下架终态：大厅与往期历史都不展示（口径「四、帖子状态机」）
+  deleted: '已违规下架'
 };
 
 // 统一文案：机审拦截 / 举报后审查中（页面共用，避免文案各写一份）
 const CONTENT_RISKY_MESSAGE = '您发布的内容涉嫌违规，请修改后重试';
 const AUDITING_BLOCK_MESSAGE = '该内容涉嫌违规，正在审查中';
+
+// 管理员对外联系邮箱（口径「十、违规处置」要求受罚者拦截文案给出真实邮箱）
+const ADMIN_CONTACT_EMAIL = 'xunhu_app@qq.com';
+// 受罚者（role === 'banned'）拦截文案：前端入口拦截统一用这一句
+const BANNED_BLOCK_MESSAGE = '您的账号因违规已被限制使用，如有疑问请联系管理员邮箱：' + ADMIN_CONTACT_EMAIL;
+
+/**
+ * 违禁词命中文案（全局唯一句式，口径「十一、违禁词与内容安全」）
+ *   violationMessage('发布', '代课') -> '发布失败：包含违规词汇【代课】，请修改后重试。'
+ * action 取值：发布 / 保存 / 评价 / 报名
+ */
+function violationMessage(action, word) {
+  const hit = word ? '【' + word + '】' : '';
+  return action + '失败：包含违规词汇' + hit + '，请修改后重试。';
+}
 
 /* ---------------- 自动化风控（v1.2.0） ----------------
  * posts.reportWeight  举报权重：每个「新举报人」+1（同一人重复举报不重复加权）
@@ -72,8 +93,14 @@ const AUDITING_BLOCK_MESSAGE = '该内容涉嫌违规，正在审查中';
  * 【重要】阈值只在云函数里生效（cloudfunctions/report、cloudfunctions/admin），
  * 前端这份常量只用于页面文案与展示，不要在前端做任何「自动封禁」判断。
  */
-const REPORT_WEIGHT_AUDIT_THRESHOLD = 3; // reportWeight >= 3 -> 自动改 status = 'auditing'
-const WARNING_BAN_THRESHOLD = 2;         // warningCount >= 2 -> 自动改 role = 'banned'
+// v1.3.0 提高阈值（防协同举报滥用）：3 人举报即可下架、2 次警告即封号太容易被凑人头
+const REPORT_WEIGHT_AUDIT_THRESHOLD = 5; // reportWeight >= 5 -> 自动改 status = 'auditing'
+const WARNING_BAN_THRESHOLD = 3;         // warningCount >= 3 -> 自动改 role = 'banned'（仅标记，不切断前端）
+
+/* 列表拉取上限（内测降本）：大厅 / 任务页每次同步只拉最新 20 条（= 1 次 get 请求）。
+ * 以前是 100 条（5 次 get），冷启动 + 每次 onShow 都在烧云开发额度。
+ * 注意：往期历史 Tab 因而只覆盖最近 20 条内的已结束帖子；要看更早的请走详情页/任务页。*/
+const POSTS_FETCH_LIMIT = 20;
 
 // 角色 -> 中文（后台展示用）
 const ROLE_MAP = {
@@ -88,9 +115,10 @@ const ADMIN_TABS = [
   { key: 'appeal', text: '学号申诉' }
 ];
 
-// 一人一帖：同一用户同时只允许一条 active（进行中）的帖子。
+// 一人一帖：同一用户同时只允许一条「占用名额」的帖子 —— active（进行中）与 auditing（审查中）
+// 都占名额，ended 不占（口径「四、帖子状态机」：auditing 期间不能发布新帖）。
 // 前端（大厅 + 号 / 发布页）只是体验层拦截，真正拦得住的是云函数 publish（ALREADY_HAS_ACTIVE）。
-const ACTIVE_POST_LIMIT_MESSAGE = '您已有一条进行中的信息，请先结束后再发布新信息。';
+const ACTIVE_POST_LIMIT_MESSAGE = '您已有寻呼中或审查中的信息，请先结束后再发布新信息。';
 
 /* ---------------- 双向评价（防互刷） -------------
  * 集合 reviews：reviewId / postId / reviewerOpenid / revieweeOpenid / rating / content / createTime
@@ -297,9 +325,13 @@ module.exports = {
   POST_STATUS_MAP,
   CONTENT_RISKY_MESSAGE,
   AUDITING_BLOCK_MESSAGE,
+  ADMIN_CONTACT_EMAIL,
+  BANNED_BLOCK_MESSAGE,
+  violationMessage,
   ACTIVE_POST_LIMIT_MESSAGE,
   REPORT_WEIGHT_AUDIT_THRESHOLD,
   WARNING_BAN_THRESHOLD,
+  POSTS_FETCH_LIMIT,
   ROLE_MAP,
   ADMIN_TABS,
   REVIEW_CONTENT_MAX,

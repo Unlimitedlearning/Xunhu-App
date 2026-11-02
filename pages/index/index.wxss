@@ -45,10 +45,49 @@ page {
   box-shadow: 0 2rpx 8rpx rgba(0, 0, 0, 0.06);
 }
 
+/* ---------- 热门标签栏（三个 Tab 下方，可横向滑动） ---------- */
+.tag-bar {
+  flex-shrink: 0;
+  width: 100%;
+  height: 80rpx;
+  box-sizing: border-box;
+  padding: 12rpx 20rpx;
+  white-space: nowrap;      /* 配合 inline-block 实现横向滑动 */
+  background-color: #f5f6f8; /* 与页面底色一致，只靠胶囊分层 */
+}
+
+/* 单个标签胶囊：浅灰背景 + 小字号 */
+.hot-tag {
+  display: inline-block;
+  height: 56rpx;
+  line-height: 56rpx;
+  padding: 0 20rpx;
+  margin-right: 12rpx;
+  font-size: 24rpx;
+  color: #666666;
+  background-color: #f0f0f0;
+  border-radius: 28rpx;
+  vertical-align: top;
+  white-space: nowrap;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+/* 选中态：微信绿高亮（与 Tab 选中态同一套颜色语言） */
+.hot-tag-active {
+  color: #ffffff;
+  background-color: #07c160;
+  font-weight: bold;
+}
+
 .scrollarea {
   /* 占满视口剩余高度（100vh 已扣除导航栏与 tabBar，再扣掉 96rpx 的 Tab 栏） */
   height: calc(100vh - 96rpx);
   box-sizing: border-box;
+}
+
+/* 热门标签栏出现时，列表区再让出 80rpx（否则会被挤出可视区） */
+.scrollarea-with-tags {
+  height: calc(100vh - 176rpx);
 }
 
 .container {

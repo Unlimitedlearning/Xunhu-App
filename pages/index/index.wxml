@@ -12,8 +12,25 @@
           bindtap="onTabChange">{{item.text}}</view>
   </view>
 
+  <!-- 任务二：动态热门标签栏（在三个 Tab 下方，一行可横向滑动）
+       数据完全由前端从当前 Tab 的帖子里聚合出来，不请求任何接口；
+       点「全部」或再点一次已选标签 -> 取消选中，恢复完整列表 -->
+  <scroll-view class="tag-bar"
+               wx:if="{{hotTags.length > 0}}"
+               scroll-x>
+    <view class="hot-tag hot-tag-all {{activeTag === '' ? 'hot-tag-active' : ''}}"
+          data-tag=""
+          bindtap="onTagTap">全部</view>
+    <view class="hot-tag {{activeTag === item.name ? 'hot-tag-active' : ''}}"
+          wx:for="{{hotTags}}"
+          wx:for-item="item"
+          wx:key="name"
+          data-tag="{{item.name}}"
+          bindtap="onTagTap">#{{item.name}}</view>
+  </scroll-view>
+
   <!-- 这是一个可滚动的区域：自带下拉刷新（页面本体不滚动，所以用 scroll-view 的 refresher） -->
-  <scroll-view class="scrollarea"
+  <scroll-view class="scrollarea {{hotTags.length > 0 ? 'scrollarea-with-tags' : ''}}"
                scroll-y
                type="list"
                refresher-enabled="{{true}}"

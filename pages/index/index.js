@@ -1,6 +1,8 @@
 // pages/index/index.js
 // 大厅界面：三个 Tab（最新发布 / 最热招募 / 往期历史）都是纯前端内存处理
 //   数据只拉一次（onShow 一次 + 下拉刷新一次），切 Tab 只做 filter + sort，不重新请求网络
+//   动态热门标签（hotTags）同样是纯内存聚合：基于「当前 Tab 的帖子」实时统计频次，取前 8 个
+//   标签筛选叠加在 Tab 结果之上（先 Tab 后标签），全程零网络请求、零数据库查询
 
 const store = require("../../utils/store");
 const guard = require("../../utils/guard");
@@ -26,6 +28,29 @@ const TABS = [
   { key: 'history', text: '往期历史' }
 ];
 
+// 热门标签最多展示个数（不足 8 个就有几个显示几个）
+const HOT_TAG_LIMIT = 8;
+
+// 标签筛选后一条都没命中时的空状态前缀（后面拼上标签名）
+const TAG_EMPTY_PREFIX = '没有找到包含「#';
+
+/**
+ * 标签归一化：统一成「去空白的字符串数组」并去重
+ * 热门标签统计（可按标签名做 key）和标签筛选（indexOf 精确匹配）都依赖这份干净数据，
+ * 否则云端 tags 里一个前后空格就会导致「统计得到 A、筛选筛不出 A」。
+ */
+function normalizeTags(raw) {
+  if (!raw) return [];
+  const list = Array.isArray(raw) ? raw : [raw];
+  const result = [];
+  list.forEach(function (tag) {
+    if (typeof tag !== 'string') return;
+    const name = tag.trim();
+    if (name && result.indexOf(name) === -1) result.push(name);
+  });
+  return result;
+}
+
 // 每个 Tab 的空状态文案（往期历史为空和「大厅为空」不是一回事）
 const EMPTY_TEXT = {
   latest: '大厅目前空空如也，点击右下角 + 号，发布第一条招募吧！',
@@ -37,7 +62,9 @@ Page({
   data: {
     tabs: TABS,
     activeTab: 'latest',   // 默认「最新发布」
-    postList: [],          // 当前 Tab 渲染的列表
+    activeTag: '',         // 当前选中的热门标签，空字符串 = 「全部」
+    hotTags: [],           // 当前 Tab 下频次最高的前 8 个标签 [{ name, count }]
+    postList: [],          // 当前 Tab + 标签筛选后真正渲染的列表
     emptyText: EMPTY_TEXT.latest,
     refreshing: false,
     loaded: false          // 云数据首次拉取是否完成（避免空状态误闪）
@@ -104,42 +131,106 @@ Page({
   },
 
   /**
-   * 切换 Tab：纯内存 filter + sort，零网络请求
+   * 切换 Tab / 点标签的统一入口：纯内存 filter + sort，零网络请求
    *   最新发布：status !== 'ended'，createTime 降序
    *   最热招募：status !== 'ended'，heat 降序
    *   往期历史：status === 'ended'，endTime 降序
+   *
+   * 处理链路：全量池 -> 丢掉 deleted/unknown -> Tab 细分（tabList）
+   *          -> 统计热门标签（hotTags）-> 标签筛选（postList）
+   * 注意 hotTags 是基于 tabList 统计的，不能基于 postList：
+   *   否则点一个标签后标签栏会塌缩成只剩它自己，用户再也没法换回别的标签。
+   *
+   * @param {string} tabKey 目标 Tab
+   * @param {string} [tag] 目标标签；不传 = 沿用当前 activeTag，传 '' = 回到「全部」
    */
-  applyTab: function (tabKey) {
+  applyTab: function (tabKey, tag) {
     // deleted / unknown 在进入任何 Tab 之前就丢掉（下面三处 filter 只负责 active/auditing/ended 的细分）
     const pool = (this.postPool || []).filter(function (item) {
       return VISIBLE_STATUS.indexOf(item.status) > -1;
     });
-    let list;
+    let tabList;
 
     if (tabKey === 'history') {
-      list = pool
+      tabList = pool
         .filter(function (item) { return item.status === 'ended'; })
         .sort(function (a, b) {
           // 老数据可能没有 endTime（被举报后直接归档等），用 createTime 兜底
           return (b.endTime || 0) - (a.endTime || 0) || (b.createTime || 0) - (a.createTime || 0);
         });
     } else if (tabKey === 'hot') {
-      list = pool
+      tabList = pool
         .filter(function (item) { return item.status !== 'ended'; })
         .sort(function (a, b) {
           return (b.heat || 0) - (a.heat || 0) || (b.createTime || 0) - (a.createTime || 0);
         });
     } else {
-      list = pool
+      tabList = pool
         .filter(function (item) { return item.status !== 'ended'; })
         .sort(function (a, b) { return (b.createTime || 0) - (a.createTime || 0); });
     }
 
+    // 任务一：热门标签永远跟着「当前 Tab 的数据」重算（切 Tab、下拉刷新都会走到这里）
+    const hotTags = this.collectHotTags(tabList);
+
+    // 切 Tab 时如果选中的标签在新 Tab 里连前 8 都没进（等于筛不出东西也没高亮可点），自动回到「全部」
+    let activeTag = (tag === undefined) ? (this.data.activeTag || '') : (tag || '');
+    if (activeTag && !this.hasTag(hotTags, activeTag)) activeTag = '';
+
+    // 任务三：标签筛选叠加在 Tab 结果之上 —— 先 Tab 后标签，两者互不越界
+    // （在「往期历史」里点标签，只会在历史帖子里筛，不会翻出进行中的帖子）
+    const postList = activeTag
+      ? tabList.filter(function (item) {
+          return (item.tags || []).indexOf(activeTag) > -1;
+        })
+      : tabList;
+
     this.setData({
       activeTab: tabKey,
-      postList: list,
-      emptyText: EMPTY_TEXT[tabKey] || EMPTY_TEXT.latest
+      activeTag: activeTag,
+      hotTags: hotTags,
+      postList: postList,
+      emptyText: activeTag
+        ? TAG_EMPTY_PREFIX + activeTag + '」的信息，换个标签试试吧'
+        : (EMPTY_TEXT[tabKey] || EMPTY_TEXT.latest)
     });
+  },
+
+  /**
+   * 任务一：动态热门标签聚合
+   * 遍历传入列表的所有 tags，统计每个标签出现次数，频次降序取前 HOT_TAG_LIMIT 个。
+   * 同频次时按「首次出现的先后」排，保证每次渲染顺序稳定（不来回跳）。
+   * @param {Array} list 当前 Tab 的帖子
+   * @returns {Array<{name: string, count: number}>}
+   */
+  collectHotTags: function (list) {
+    const counter = Object.create(null);
+    const firstSeen = Object.create(null);
+    let seq = 0;
+
+    (list || []).forEach(function (item) {
+      (item.tags || []).forEach(function (name) {
+        if (counter[name] === undefined) {
+          counter[name] = 0;
+          firstSeen[name] = seq++;
+        }
+        counter[name] += 1;
+      });
+    });
+
+    return Object.keys(counter)
+      .sort(function (a, b) {
+        return counter[b] - counter[a] || firstSeen[a] - firstSeen[b];
+      })
+      .slice(0, HOT_TAG_LIMIT)
+      .map(function (name) {
+        return { name: name, count: counter[name] };
+      });
+  },
+
+  // 当前 activeTag 是否还在热门标签里（决定切 Tab 后要不要自动取消选中）
+  hasTag: function (hotTags, tag) {
+    return (hotTags || []).some(function (item) { return item.name === tag; });
   },
 
   // Tab 点击：只改选中态 + 重算列表，不请求网络
@@ -147,6 +238,20 @@ Page({
     const tab = e.currentTarget.dataset.tab;
     if (!tab || tab === this.data.activeTab) return;
     this.applyTab(tab);
+  },
+
+  /**
+   * 任务三：热门标签点击
+   *   点未选中的标签 -> 选中，只显示含该标签的帖子
+   *   再点同一个 / 点「全部」-> 取消选中，恢复当前 Tab 的完整列表
+   */
+  onTagTap: function (e) {
+    // dataset 强转字符串：「全部」按钮的 data-tag 是空串，避免个别基础库把它解析成 true / undefined
+    const rawTag = e.currentTarget.dataset.tag;
+    const tag = (typeof rawTag === 'string') ? rawTag.trim() : '';
+    const next = (tag && tag !== this.data.activeTag) ? tag : '';
+    if (next === (this.data.activeTag || '')) return; // 重复点「全部」不做无谓 setData
+    this.applyTab(this.data.activeTab, next);
   },
 
   /**
@@ -178,7 +283,7 @@ Page({
       title: raw.title || '未命名信息',
       content: raw.content || '',
       contentText: isAuditing ? CONTENT_MASK : (raw.content || ''),
-      tags: raw.tags || [],
+      tags: normalizeTags(raw.tags),
       authorName: raw.authorName || '匿名同学',
       authorOpenid: raw.authorOpenid || '', // 用于判断「这是不是我自己的帖子」（审查中放行作者本人）
       status: status,

@@ -2,7 +2,8 @@
 // 全局共享字典 / 常量：所有页面统一从这里取，避免字典、写死用户、Storage key 在多处各写一份
 // 字段结构严格遵循 PRD「四、核心数据模型」：
 //   posts        -> id / category / title / content / tags / authorName / contact / status / heat / createTime
-//   applications -> id / postId / applicantId / applicantName / receiverId / status / createTime
+//   applications -> id / postId / applicantId / applicantName / applicantContact / applicantStudentId
+//                   / applicantResume / applyNote / receiverId / status / createTime / statusUpdateTime
 
 // 身份一律由云端提供，前端不再保存任何「当前用户」常量：
 //   openid  -> 云函数 login 下发（store.getOpenId()）
@@ -18,8 +19,9 @@ const COLLECTIONS = {
   POSTS: 'posts',
   APPLICATIONS: 'applications',
   USERS: 'users', // 用户资料：昵称 / 学号 / 简历 / 联系方式（一个 openid 一条）
-  REPORTS: 'reports', // 举报记录：postId / reporterOpenid / reason / desc / createTime（客户端不直接读写）
-  REVIEWS: 'reviews' // 双向评价：reviewId / postId / reviewerOpenid / revieweeOpenid / rating / content / createTime（客户端不直接读写）
+  REPORTS: 'reports', // 举报记录：postId / reporterOpenid / reason / desc / status / createTime（客户端不直接读写）
+  REVIEWS: 'reviews', // 双向评价：reviewId / postId / reviewerOpenid / revieweeOpenid / rating / content / createTime（客户端不直接读写）
+  ADMIN_LOGS: 'admin_logs' // 后台操作日志：adminOpenid / action / targetId / createTime（客户端不直接读写）
 };
 
 // 云函数名（cloudfunctions/ 目录下同名文件夹，需在工具里「上传并部署」）
@@ -30,8 +32,10 @@ const CLOUD_FUNCTIONS = {
   HEAT: 'heat',     // 热度原子自增
   PUBLISH: 'publish', // 发布：内容安全机审 + 直接上线（status = active）
   REPORT: 'report',  // 举报：写 reports + 帖子改 auditing
-  REVIEW: 'review',  // 评价：A 对 B 唯一记录（查重后 add / update），并回传匿名评价列表
-  GET_AUTHOR_PROFILE: 'getAuthorProfile' // 详情页发布者名片：一次查 users 简历 + reviews 匿名统计
+  REVIEW: 'review',  // 评价：同一帖子同一被评价人唯一记录（查重后只 add），并回传匿名评价列表
+  GET_AUTHOR_PROFILE: 'getAuthorProfile', // 详情页发布者名片：一次查 users 简历 + reviews 匿名统计
+  ADMIN: 'admin',    // 管理后台：举报审查 / 学号申诉（校验 role === 'admin'）
+  APPLICATION: 'application' // 申请流转唯一入口：apply / updateStatus / list（越权拦截在服务端）
 };
 
 // 分类：英文枚举 -> 中文
@@ -60,18 +64,45 @@ const POST_STATUS_MAP = {
 const CONTENT_RISKY_MESSAGE = '您发布的内容涉嫌违规，请修改后重试';
 const AUDITING_BLOCK_MESSAGE = '该内容涉嫌违规，正在审查中';
 
+/* ---------------- 自动化风控（v1.2.0） ----------------
+ * posts.reportWeight  举报权重：每个「新举报人」+1（同一人重复举报不重复加权）
+ * users.warningCount  违规警告次数：帖子权重首次触顶自动审查 +1；管理员「确认违规」再 +1
+ * users.role          user / banned / admin（只能由服务端或控制台写，客户端永远改不了）
+ *
+ * 【重要】阈值只在云函数里生效（cloudfunctions/report、cloudfunctions/admin），
+ * 前端这份常量只用于页面文案与展示，不要在前端做任何「自动封禁」判断。
+ */
+const REPORT_WEIGHT_AUDIT_THRESHOLD = 3; // reportWeight >= 3 -> 自动改 status = 'auditing'
+const WARNING_BAN_THRESHOLD = 2;         // warningCount >= 2 -> 自动改 role = 'banned'
+
+// 角色 -> 中文（后台展示用）
+const ROLE_MAP = {
+  user: '普通用户',
+  banned: '已封禁',
+  admin: '管理员'
+};
+
+// 管理后台 Tab（顺序即页面展示顺序）
+const ADMIN_TABS = [
+  { key: 'reports', text: '举报审查' },
+  { key: 'appeal', text: '学号申诉' }
+];
+
 // 一人一帖：同一用户同时只允许一条 active（进行中）的帖子。
 // 前端（大厅 + 号 / 发布页）只是体验层拦截，真正拦得住的是云函数 publish（ALREADY_HAS_ACTIVE）。
 const ACTIVE_POST_LIMIT_MESSAGE = '您已有一条进行中的信息，请先结束后再发布新信息。';
 
 /* ---------------- 双向评价（防互刷） -------------
  * 集合 reviews：reviewId / postId / reviewerOpenid / revieweeOpenid / rating / content / createTime
- * 核心规则（云端 cloudfunctions/review 唯一实现）：A 对 B 永远只有一条记录 ——
- *   写入前先查 reviewerOpenid == A 且 revieweeOpenid == B：不存在 add，已存在 update
- *   （rating / content / createTime / postId 全部覆盖成最新一次）。
+ * 核心规则（云端 cloudfunctions/review 唯一实现）：同一个帖子、同一个被评价人，
+ *   一个评价人只能提交一次（一个帖子招多个队友时，B 和 C 要能分别评）：
+ *   写入前先查 postId + reviewerOpenid + revieweeOpenid，已存在直接返回 ALREADY_REVIEWED，
+ *   **只允许 add、不再有覆盖更新**。
  * 建议权限：reviews 设「所有用户不可读写」，读写只走云函数 —— 评价人 openid 因此无法被前端拿到。
  */
 const REVIEW_CONTENT_MAX = 50;          // 评价文本上限（WXML maxlength 也取这个值）
+// 已评价过时的统一文案：云端 ALREADY_REVIEWED_MESSAGE、任务页按钮/toast 都用这一句
+const ALREADY_REVIEWED_MESSAGE = '您已经评价过本次合作了';
 const REVIEW_MIN_COUNT = 3;             // 收到评价少于 3 条时只显示「满意度统计中...」
 const REVIEW_PENDING_TEXT = '满意度统计中...';
 const REVIEW_ANONYMOUS_NAME = '某同学';  // 评价人一律匿名展示，不暴露昵称/openid
@@ -93,6 +124,20 @@ const APPLICATION_STATUS_MAP = {
   accepted: '已同意',
   rejected: '已拒绝'
 };
+
+/* ---------------- 申请（报名） ----------------
+ * 读写全部走云函数 application（cloudfunctions/application）：
+ *   apply       申请人提交，附言必填 -> applications.applyNote
+ *   updateStatus 收帖人同意 / 拒绝，服务端校验 receiverId === 当前 openid（越权拦截唯一实现）
+ *   list        联查 posts + users，把申请人昵称 / 简历 / 附言拼好后下发
+ * 因此 applications 集合建议把 write 置为 false（客户端连 add 都不需要），
+ * read 保留自定义规则只为「云函数未部署时」的降级兜底。
+ */
+const APPLY_NOTE_MAX = 100; // 申请附言上限（WXML/弹窗、store、云函数三处同一值）
+const APPLY_NOTE_PLACEHOLDER = '简单介绍自己：能帮上什么忙、什么时候有空（必填）';
+const APPLY_NOTE_EMPTY_TEXT = '对方没有填写申请附言';
+// 申请前必须让用户看到的警告（与协议 2.1 同一口径）：联系方式必须真实
+const APPLY_CONTACT_WARNING = '请确保您填写的联系方式真实有效。若被举报虚假联系，平台将封禁您的账号权限。';
 
 // 发帖人姓名 -> openid：仅用于「首次灌入演示数据」时给帖子标注 authorOpenid
 // （接入云开发后，真实帖子的 authorOpenid 一律取当前用户 openid）
@@ -253,7 +298,12 @@ module.exports = {
   CONTENT_RISKY_MESSAGE,
   AUDITING_BLOCK_MESSAGE,
   ACTIVE_POST_LIMIT_MESSAGE,
+  REPORT_WEIGHT_AUDIT_THRESHOLD,
+  WARNING_BAN_THRESHOLD,
+  ROLE_MAP,
+  ADMIN_TABS,
   REVIEW_CONTENT_MAX,
+  ALREADY_REVIEWED_MESSAGE,
   REVIEW_MIN_COUNT,
   REVIEW_PENDING_TEXT,
   REVIEW_ANONYMOUS_NAME,
@@ -262,6 +312,10 @@ module.exports = {
   AUTHOR_RESUME_EMPTY_TEXT,
   AUTHOR_REVIEW_EMPTY_TEXT,
   APPLICATION_STATUS_MAP,
+  APPLY_NOTE_MAX,
+  APPLY_NOTE_PLACEHOLDER,
+  APPLY_NOTE_EMPTY_TEXT,
+  APPLY_CONTACT_WARNING,
   AUTHOR_OPENID_MAP,
   // 违禁词库 + 净化匹配工具（前端 pages/publish 直接用，云函数里有一份同值副本）
   ACADEMIC_FRAUD,

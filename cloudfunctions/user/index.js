@@ -230,6 +230,8 @@ async function createProfile(db, payload, openid) {
     _openid: openid, // 唯一键（服务端写入，客户端不可伪造）
     openid: openid,  // 兼容字段：历史文档 / 调试识别
     role: ROLE_USER, // 角色默认值：新建用户一律 user，后端才有权改成 banned / admin
+    // 违规警告次数（v1.2.0 风控）：只有 report / admin 云函数会 +1，客户端字段白名单里没有它
+    warningCount: 0,
     createTime: Date.now()
   });
 
@@ -243,7 +245,12 @@ async function createProfile(db, payload, openid) {
       const message = String((err && err.message) || '');
       if (message.indexOf('_openid') === -1) throw err;
       // 降级：不写 _openid，只靠 openid 字段
-      const fallback = Object.assign({}, payload, { openid: openid, role: ROLE_USER, createTime: Date.now() });
+      const fallback = Object.assign({}, payload, {
+        openid: openid,
+        role: ROLE_USER,
+        warningCount: 0,
+        createTime: Date.now()
+      });
       const retry = await db.collection(COLLECTION).add({ data: fallback });
       return { id: retry._id, data: Object.assign({ _id: retry._id }, fallback) };
     }

@@ -5,7 +5,8 @@
     "pages/profile/profile",
     "pages/detail/detail",
     "pages/task/task",
-    "pages/agreement/agreement"
+    "pages/agreement/agreement",
+    "pages/admin/admin"
   ],
   "window": {
     "navigationBarTextStyle": "black",

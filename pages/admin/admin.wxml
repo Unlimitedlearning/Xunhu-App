@@ -1,0 +1,131 @@
+<!--pages/admin/admin.wxml
+    管理后台：顶部两个 Tab（举报审查 / 学号申诉）。
+    所有数据都来自 admin 云函数（reports、users 集合对客户端禁读），页面本身不发任何数据库查询。-->
+<view class="admin">
+
+  <!-- 顶部 Tab：与大厅同一套视觉，切换只做内存切换 -->
+  <view class="tab-bar">
+    <view class="tab-item {{activeTab === item.key ? 'tab-item-active' : ''}}"
+          wx:for="{{tabs}}"
+          wx:for-item="item"
+          wx:key="key"
+          data-tab="{{item.key}}"
+          bindtap="onTabChange">{{item.text}}</view>
+  </view>
+
+  <!-- ============ Tab 1：举报审查 ============ -->
+  <scroll-view class="scrollarea" scroll-y wx:if="{{activeTab === 'reports'}}">
+    <view class="container">
+
+      <view class="hint">下拉可刷新。每条举报展示帖子标题、举报原因与补充说明，不包含任何联系方式；点标题可查看帖子详情。「忽略」= 判定无违规，帖子会立即恢复为进行中。</view>
+
+      <view class="loading-text" wx:if="{{reportsLoading && !reportsLoaded}}">正在加载举报列表…</view>
+
+      <view class="error-card" wx:if="{{reportsError}}">{{reportsError}}</view>
+
+      <view class="empty-card" wx:if="{{reportsLoaded && !reportsError && reports.length === 0}}">
+        <view class="empty-emoji">✅</view>
+        <view class="empty-text">暂无待处理的举报</view>
+      </view>
+
+      <view class="report-card" wx:for="{{reports}}" wx:key="reportId">
+
+        <view class="report-head">
+          <!-- 标题可点击：跳帖子详情（管理员预览通道），帖子已删除时不可点 -->
+          <view class="report-title-wrap"
+                hover-class="report-title-hover"
+                data-post-id="{{item.postId}}"
+                data-deleted="{{item.isDeleted}}"
+                bindtap="goPostDetail">
+            <text class="report-title">{{item.title}}</text>
+            <text class="report-title-link" wx:if="{{!item.isDeleted}}">查看帖子详情 ›</text>
+          </view>
+          <text class="status-badge {{item.isAuditing ? 'status-badge-auditing' : ''}} {{item.isDeleted ? 'status-badge-deleted' : ''}}">{{item.statusText}}</text>
+        </view>
+
+        <!-- 举报信息：原因 / 权重 / 补充说明 / 举报人（已脱敏）/ 时间 -->
+        <view class="meta-row">
+          <text class="meta-item">举报原因：{{item.reason}}</text>
+          <text class="meta-item">被举报 {{item.weight}} 次</text>
+        </view>
+
+        <view class="report-desc" wx:if="{{item.desc}}">举报补充：{{item.desc}}</view>
+        <view class="report-desc report-desc-empty" wx:else>举报补充：（举报人未填写）</view>
+
+        <view class="meta-row">
+          <text class="meta-item" wx:if="{{item.reporter}}">举报人：{{item.reporter}}</text>
+          <text class="meta-item" wx:if="{{item.authorName}}">发帖人：{{item.authorName}}</text>
+        </view>
+
+        <view class="meta-row meta-row-last">
+          <text class="meta-item meta-time">{{item.createTime}}</text>
+        </view>
+
+        <view class="action-row">
+          <view class="btn btn-ghost"
+                hover-class="btn-hover"
+                data-report-id="{{item.reportId}}"
+                data-post-id="{{item.postId}}"
+                bindtap="onIgnoreTap">忽略</view>
+          <view class="btn btn-danger"
+                hover-class="btn-hover"
+                data-report-id="{{item.reportId}}"
+                data-post-id="{{item.postId}}"
+                bindtap="onViolateTap">确认违规</view>
+        </view>
+
+      </view>
+    </view>
+  </scroll-view>
+
+  <!-- ============ Tab 2：学号申诉 ============ -->
+  <scroll-view class="scrollarea" scroll-y wx:if="{{activeTab === 'appeal'}}">
+    <view class="container">
+
+      <view class="search-card">
+        <input class="search-input"
+               type="number"
+               maxlength="10"
+               placeholder="输入要查询的学号"
+               value="{{studentIdInput}}"
+               bindinput="onStudentIdInput"
+               bindconfirm="onSearchTap" />
+        <view class="search-btn" hover-class="btn-hover" bindtap="onSearchTap">搜索</view>
+      </view>
+
+      <view class="hint">后台不展示完整学号与任何联系方式。有同学申诉「学号被他人占用」时，在这里核对绑定者并强制解绑；解绑后该学号可被真正的同学重新绑定。</view>
+
+      <view class="loading-text" wx:if="{{userLoading}}">正在查询…</view>
+
+      <view class="error-card" wx:if="{{userError}}">{{userError}}</view>
+
+      <view class="empty-card" wx:if="{{userSearched && !userLoading && !userError && users.length === 0}}">
+        <view class="empty-emoji">🔍</view>
+        <view class="empty-text">没有查到绑定该学号的账号</view>
+      </view>
+
+      <view class="user-card" wx:for="{{users}}" wx:key="openid">
+        <view class="user-head">
+          <text class="user-name">{{item.nickname}}</text>
+          <text class="role-badge role-{{item.role}}">{{item.roleText}}</text>
+        </view>
+
+        <view class="meta-row"><text class="meta-item">学号：{{item.studentIdMasked}}</text></view>
+        <view class="meta-row"><text class="meta-item">违规警告：{{item.warningCount}} 次（满 2 次自动封禁）</text></view>
+        <view class="meta-row meta-row-last" wx:if="{{item.updateTime}}">
+          <text class="meta-item meta-time">最近更新：{{item.updateTime}}</text>
+        </view>
+
+        <view class="action-row">
+          <view class="btn btn-danger"
+                hover-class="btn-hover"
+                wx:if="{{item.hasOpenid}}"
+                data-openid="{{item.openid}}"
+                bindtap="onUnbindTap">强制解绑</view>
+        </view>
+      </view>
+
+    </view>
+  </scroll-view>
+
+</view>

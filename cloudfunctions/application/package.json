@@ -1,0 +1,9 @@
+{
+  "name": "application",
+  "version": "1.0.0",
+  "description": "申请流转唯一入口：apply / updateStatus / list（联查 posts + users，越权拦截在服务端）",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}

@@ -11,8 +11,10 @@ const REPORT_CATEGORIES = constants.REPORT_CATEGORIES;
 const AUDITING_BLOCK_MESSAGE = constants.AUDITING_BLOCK_MESSAGE;
 const RESUME_PREVIEW_CHARS = constants.AUTHOR_RESUME_PREVIEW_CHARS;
 
-// 申请前必须让用户看到的警告（与协议 2.1 同一口径）：联系方式必须真实
-const APPLY_CONTACT_WARNING = '请确保您填写的联系方式真实有效。若被举报虚假联系，平台将封禁您的账号权限。';
+// 申请相关的文案 / 上限统一放 constants（与云函数 application 同值）
+const APPLY_CONTACT_WARNING = constants.APPLY_CONTACT_WARNING;
+const APPLY_NOTE_MAX = constants.APPLY_NOTE_MAX;
+const APPLY_NOTE_PLACEHOLDER = constants.APPLY_NOTE_PLACEHOLDER;
 
 // 时间戳 -> YYYY-MM-DD（详情页评价只展示日期，够用也不占宽度）
 function formatReviewTime(timestamp) {
@@ -44,6 +46,9 @@ Page({
     appliedStatus: '',
     appliedText: '',
     notFound: false,
+    // 管理员预览（仅管理后台点举报卡片标题进来时置 true）：
+    // 放宽「审查中不可入」拦截，但同时隐藏报名/举报按钮、不加热度
+    adminPreview: false,
 
     // ---- 发布者名片（申请人建立信任用：简历 / 满意度 / 最近 3 条匿名评价）----
     // 初值直接用 store 的兜底结构：名片还没回来时 wxml 也不会取到 undefined
@@ -67,7 +72,6 @@ Page({
 
     const openid = store.getOpenId();
     let post = store.findPost(id);
-
     // 缓存里没有（冷启动 / 分享直达）→ 再拉一次
     if (!post) {
       try {
@@ -86,17 +90,30 @@ Page({
     // 发帖人视角：authorOpenid 是我
     const isOwner = !!openid && post.authorOpenid === openid;
 
-    // 【审查拦截】status === 'auditing'（被举报打码 / 待复核）：任何人都不允许进入详情，
-    // 包括发帖人本人（先退回大厅，避免本人反复点自己的帖子又看不到）
-    if (post.status === 'auditing') {
+    // 【审查拦截】status === 'auditing'（被举报打码 / 待复核）：普通用户与发帖人本人都不可进入；
+    // 唯一例外是管理员预览（?admin=1）：先向云端重拉资料，确认 role === 'admin' 才放行。
+    // 注意：posts 本来对所有用户可读，拦截只是产品体验层；这里多一道 role 校验，是为了不让
+    // 「改包加个 admin=1」就能把审查中的内容当正常帖子看。
+    let adminPreview = false;
+    if (options && options.admin === '1') {
+      try {
+        await store.syncProfile();
+      } catch (err) {
+        console.error('[detail] 管理员预览校验失败，按普通用户处理：', err);
+      }
+      adminPreview = store.isAdmin();
+    }
+
+    if (post.status === 'auditing' && !adminPreview) {
       wx.showToast({ title: AUDITING_BLOCK_MESSAGE, icon: 'none', duration: 1500 });
       backToHall(1500);
       return;
     }
 
     // 热度防刷：同一用户对同一帖子、同一天只计一次浏览热度（云端原子自增）
+    // 管理员预览不计热度：审核行为不应该把被举报的帖子顶到「最热」
     let heat = store.resolveHeat(post);
-    if (store.claimHeatOnce(post.id, openid, store.HEAT_ACTION.VIEW)) {
+    if (!adminPreview && store.claimHeatOnce(post.id, openid, store.HEAT_ACTION.VIEW)) {
       heat += 1;
       try {
         await store.persistHeat(post.id, heat);
@@ -131,6 +148,7 @@ Page({
       isEnded: post.status === 'ended',
       appliedStatus: appliedStatus,
       appliedText: appliedText,
+      adminPreview: adminPreview,
       notFound: false
     });
 
@@ -255,6 +273,53 @@ Page({
     });
   },
 
+  // 申请第一步：弹窗填写「申请附言」（必填，存入 applications.applyNote）
+  // 为什么必须先采集：附言是发帖人判断「要不要同意」的唯一依据，之前完全没采集，
+  // 发帖人在任务页只能看到一个昵称，只能盲选。
+  // @return {Promise<string|null>} 填写内容（已 trim）；取消 / 空内容 / 超长返回 null
+  askApplyNote: function () {
+    return new Promise(function (resolve) {
+      wx.showModal({
+        title: '申请附言',
+        editable: true,
+        placeholderText: APPLY_NOTE_PLACEHOLDER,
+        confirmText: '下一步',
+        cancelText: '取消',
+        success: function (res) {
+          if (!res.confirm) {
+            resolve(null);
+            return;
+          }
+
+          const note = String(res.content || '').trim();
+          if (!note) {
+            wx.showToast({ title: '请先填写申请附言', icon: 'none' });
+            resolve(null);
+            return;
+          }
+          if (note.length > APPLY_NOTE_MAX) {
+            wx.showToast({ title: '申请附言最多 ' + APPLY_NOTE_MAX + ' 个字', icon: 'none' });
+            resolve(null);
+            return;
+          }
+
+          // 前端轻量拦截（与发布同一套词库）；云端 application 还有一道绝对防线
+          const violation = constants.checkTextViolation(note);
+          if (!violation.pass) {
+            wx.showToast({ title: '附言包含违规词汇，请修改', icon: 'none' });
+            resolve(null);
+            return;
+          }
+
+          resolve(note);
+        },
+        fail: function () {
+          resolve(null); // 弹窗异常（极罕见）当作用户未填写，不发请求
+        }
+      });
+    });
+  },
+
   // 申请前二次确认：警告「联系方式必须真实，虚假联系会被封号」，用户点确认才写库
   confirmApply: function () {
     return new Promise(function (resolve) {
@@ -302,27 +367,24 @@ Page({
       return;
     }
 
-    // 2. 写入前先弹窗警告：联系方式必须真实，虚假联系会被封禁（用户确认后才落库）
+    // 2. 弹窗填写申请附言（必填）—— 附言会直接展示在发帖人的任务页
+    const applyNote = await this.askApplyNote();
+    if (!applyNote) return;
+
+    // 3. 再弹一次警告：联系方式必须真实，虚假联系会被封禁（用户确认后才落库）
     const confirmed = await this.confirmApply();
     if (!confirmed) return;
 
-    // 3. 写入一条 pending 申请（带申请人自己填的联系方式 + 学号，仅 accepted 后对发帖人可见）
-    const application = {
-      postId: post.id,
-      applicantId: openid,
-      applicantName: nickname,
-      applicantContact: applicantContact,
-      applicantStudentId: (store.getProfile().studentId || '').trim(),
-      receiverId: post.authorOpenid || post._openid || '',
-      status: 'pending',
-      createTime: Date.now()
-    };
-
+    // 4. 写库：只传 postId + applyNote，昵称 / 学号 / 联系方式 / 简历 由云函数从 users 取
+    //    （以前是前端自己拼快照：改包就能冒用他人昵称，而且字段缺漏导致发帖人看不到信息）
     try {
-      await store.addApplication(application);
+      await store.addApplication({ postId: post.id, applyNote: applyNote });
     } catch (err) {
-      console.error('[detail] 申请写入失败：', err);
-      wx.showToast({ title: '申请发送失败，请稍后重试', icon: 'none' });
+      console.error('[detail] 申请写入失败 code=' + ((err && err.code) || '') + '：', err);
+      wx.showToast({
+        title: (err && err.code !== 'FUNCTION_CALL_FAILED' && err.message) || '申请发送失败，请稍后重试',
+        icon: 'none'
+      });
       return;
     }
 

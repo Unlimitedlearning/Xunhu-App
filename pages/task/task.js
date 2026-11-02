@@ -3,8 +3,10 @@
 // 入口校验：未登录 / 资料未完善（昵称 + 联系方式）不展示申请列表，只给一个去完善的入口
 //
 // 评价规则（防互刷，真正拦截在云函数 review）：
-//   显示条件：申请 accepted **且** 关联帖子 ended（双方各只能对同一人保留一条评价）
-//   有旧评价 -> 弹窗回填 + 按钮/提交键都叫「更新评价」；无 -> 空白表单
+//   显示条件：申请 accepted **且** 关联帖子 ended
+//   同一个帖子里的同一个人只能评价一次（一个帖子招多个队友时，B 和 C 要能分别评）：
+//   已评价过 -> 按钮变【已评价】并置灰不可点，不允许再弹出评价表单
+//   （云端 handleSubmit 另有一道 ALREADY_REVIEWED 绝对拦截，条件 = postId + 双方 openid）
 
 const store = require("../../utils/store");
 const guard = require("../../utils/guard");
@@ -36,7 +38,6 @@ Page({
     // ---- 评价弹窗 ----
     reviewMaxLength: constants.REVIEW_CONTENT_MAX, // 与云端 MAX_CONTENT、textarea maxlength 同一值
     reviewModalShow: false,
-    reviewIsUpdate: false,                        // true = 回填旧数据，提交即覆盖更新
     reviewTarget: { openid: '', name: '', postId: '' },
     reviewRating: -1,                             // -1 未选（0 是「不满意」，不能用来表示未选）
     reviewContent: '',
@@ -129,7 +130,7 @@ Page({
       }
     }
 
-    // 我已发出的评价：只用来标记「已评价 / 更新评价」，失败不影响申请列表本身
+    // 我已发出的评价：按 postId 标记「已评价」并锁按钮，失败不影响申请列表本身
     try {
       await store.syncMyReviews();
     } catch (err) {
@@ -222,7 +223,12 @@ Page({
 
   /**
    * 组装申请卡片数据
-   * 漏洞三：联系方式严格对等，只有 status === 'accepted' 才下发 contact / studentId 给 WXML
+   *
+   * 数据来源（v1.3.0 起）：以云函数 application.list 下发的字段为准 ——
+   * 云端已经联查了 posts（标题 / 状态 / 发帖人 / 联系方式）与 users（申请人昵称 / 简历），
+   * 内存里的帖子缓存只做兜底（云函数降级模式下用）。
+   *
+   * 隐私红线：联系方式严格对等，只有 status === 'accepted' 才下发 contact / studentId 给 WXML
    *   type = 'sent'     我发出的申请 -> accepted 才看得到发帖人 contact
    *   type = 'received' 我收到的申请 -> accepted 才看得到申请人 contact 与完整学号
    * pending / rejected 时一律为空，不往渲染层传（避免无权限的人从渲染层挖学号）
@@ -236,47 +242,53 @@ Page({
     const isAccepted = status === 'accepted';
     const openid = store.getOpenId();
 
+    // 帖子信息：云函数 application.list 联查下发的优先，内存里的帖子缓存只做兜底
+    const postTitle = app.postTitle || (post ? post.title : '') || '该信息已被删除';
+    const postStatus = app.postStatus || (post ? post.status : '');
+    const authorName = app.authorName || (post ? post.authorName : '') || '未知';
+
     let contact = '';
     let studentId = '';
     if (isAccepted) {
       contact = type === 'sent'
-        ? (post ? post.contact : '')
+        ? (app.contact || (post ? post.contact : '') || '')
         : (app.applicantContact || '');
       // 完整学号只在「已同意」后展示给发帖人（对方申请时自己填的），其余一律空
       studentId = type === 'received' ? (app.applicantStudentId || '') : '';
     }
 
+    // ---- 申请人信息（发帖人判断要不要同意的唯一依据）----
+    const applicantName = app.applicantName || '对方同学';
+    const applicantResume = app.applicantResume || '';
+    const applyNote = app.applyNote || '';
+    const applyNoteText = applyNote || constants.APPLY_NOTE_EMPTY_TEXT;
+
     // ---- 评价入口 ----
     // sent：我申请了别人的帖子 -> 评价发帖人；received：我发的帖子 -> 评价申请人
     const revieweeOpenid = type === 'sent'
-      ? (post ? (post.authorOpenid || '') : '')
+      ? (app.authorOpenid || (post ? (post.authorOpenid || '') : ''))
       : (app.applicantId || '');
     const revieweeName = type === 'sent'
-      ? (post ? post.authorName : '')
+      ? authorName
       : (app.applicantName || '对方');
-    const postEnded = !!(post && post.status === 'ended');
+    const postEnded = postStatus === 'ended';
     // 显示条件：accepted + 帖子 ended + 对方不是自己
     const canReview = isAccepted && postEnded && !!revieweeOpenid && revieweeOpenid !== openid;
-    const myReview = canReview ? store.findMyReviewTo(revieweeOpenid) : null;
+    // 同一个帖子里的同一个人只能评一次：按键 = postId + 对方 openid（一个帖子招多人时 B、C 互不影响）；
+    // 云端已判定重复提交的（如另一台设备刚评过、mine 未刷新）用页面临时锁定兑上
+    const myReview = canReview ? store.findMyReviewByPost(app.postId, revieweeOpenid) : null;
+    const hasReviewed = !!myReview || this.isReviewLocked(app.postId, revieweeOpenid);
 
     // DEV_DEBUG：按钮没出现时，直接算出是哪一条没过（顺序与 canReview 的判定一致）
     let reviewHint = '';
     if (DEV_DEBUG && !canReview) {
       if (!isAccepted) {
         reviewHint = '申请状态不是 accepted（当前：' + (status || '空') + '）';
-      } else if (!post) {
-        // 最常见的坑：控制台里 _openid 和 _id 长得很像（都是 28 位左右），手抄容易把
-        // 作者的 openid 当成文档 _id 填进 postId。直接在这里点名提示。
-        const hitAuthor = posts.find(function (item) {
-          return item && item.authorOpenid && item.authorOpenid === app.postId;
-        });
-        reviewHint = hitAuthor
-          ? 'app.postId 填的是作者 _openid（' + app.postId + '），不是帖子文档的 _id。应把「' +
-            (hitAuthor.title || '该帖子') + '」这条文档的 _id 字段填进 postId'
-          : '帖子不存在：列表缓存里没有，按 _id 直取也失败（postId=' + (app.postId || '空') +
-            '）。请核对 applications 这条记录的 postId 是否等于帖子 _id，或帖子已被删除';
+      } else if (!app.postTitle && !post) {
+        reviewHint = '帖子不存在：application 下发与本地缓存都没拿到（postId=' + (app.postId || '空') +
+          '）。请核对 applications 这条记录的 postId 是否等于帖子 _id，或帖子已被删除';
       } else if (!postEnded) {
-        reviewHint = '帖子 status 不是 ended（当前：' + (post.status || '空') + '）';
+        reviewHint = '帖子 status 不是 ended（当前：' + (postStatus || '空') + '）';
       } else if (!revieweeOpenid) {
         reviewHint = type === 'sent'
           ? '帖子没有 authorOpenid 字段，拿不到被评价人'
@@ -291,9 +303,14 @@ Page({
     return {
       id: app.id,
       postId: app.postId,
-      postTitle: post ? post.title : '该信息已被删除',
-      authorName: post ? post.authorName : '未知',
-      applicantName: app.applicantName,
+      postTitle: postTitle,
+      authorName: authorName,
+      applicantName: applicantName,
+      applicantResume: applicantResume,
+      hasResume: applicantResume.trim() !== '',
+      applyNote: applyNote,
+      applyNoteText: applyNoteText,
+      hasApplyNote: applyNote.trim() !== '',
       status: status,
       statusText: APPLICATION_STATUS_MAP[status] || '未知状态',
       isPending: status === 'pending',
@@ -305,29 +322,60 @@ Page({
       canReview: canReview,
       postEnded: postEnded,
       reviewHint: reviewHint,
-      hasReviewed: !!myReview,
-      reviewBtnText: myReview ? '更新评价' : '评价对方',
+      hasReviewed: hasReviewed,
+      reviewBtnText: hasReviewed ? '已评价' : '评价对方',
       revieweeOpenid: revieweeOpenid,
       revieweeName: revieweeName || '对方'
     };
   },
 
-  // 同意 / 拒绝：写回云数据库
+  // 同意 / 拒绝：走云函数 application.updateStatus（服务端校验 receiverId，越权直接拦）
   handleApplication: async function (e) {
     const id = e.currentTarget.dataset.id;
     const action = e.currentTarget.dataset.action; // accepted / rejected
-    if (!id || (action !== 'accepted' && action !== 'rejected')) return;
+
+    // 真机排障：dataset 拿不到 id 时，一眼能看出是模板绑错还是数据为空
+    console.log('[task] 处理申请 applicationId=' + (id || '(空)') + ' action=' + (action || '(空)'));
+
+    if (!id || (action !== 'accepted' && action !== 'rejected')) {
+      wx.showToast({ title: '申请信息不完整，请下拉刷新后重试', icon: 'none' });
+      return;
+    }
+
+    // 防连点：同一次请求没回来之前不发第二次（避免 accepted 之后又发 rejected）
+    if (this.handlingId) return;
+    this.handlingId = id;
+
+    wx.showLoading({ title: '处理中...', mask: true });
 
     try {
       await store.updateApplicationStatus(id, action);
+      wx.hideLoading();
+
+      // 缓存已同步改过状态，renderList 立即渲染出「已同意 + 联系方式已解锁」
       this.renderList();
+
       wx.showToast({
-        title: action === 'accepted' ? '已同意申请' : '已拒绝申请',
+        title: action === 'accepted' ? '已同意，联系方式已解锁' : '已拒绝该申请',
         icon: 'none'
       });
     } catch (err) {
-      console.error('[task] 更新申请状态失败：', err);
-      wx.showToast({ title: '操作失败，请稍后重试', icon: 'none' });
+      wx.hideLoading();
+      console.error('[task] 更新申请状态失败 applicationId=' + id +
+        ' action=' + action +
+        ' code=' + ((err && err.code) || '') + '：', err);
+
+      // 业务错误（越权 / 已处理 / 帖子已结束…）用云端文案，其余统一兜底
+      const isBusinessError = !!(err && err.code &&
+        err.code !== 'FUNCTION_CALL_FAILED' &&
+        err.code !== 'APPLICATION_FAILED' &&
+        err.code !== 'INTERNAL_ERROR');
+      wx.showToast({
+        title: isBusinessError ? err.message : '操作失败，请稍后重试',
+        icon: 'none'
+      });
+    } finally {
+      this.handlingId = '';
     }
   },
 
@@ -340,8 +388,8 @@ Page({
     });
   },
 
-  /* ---------------- 评价：打开弹窗（有旧评价就回填） ---------------- */
-  onReviewTap: async function (e) {
+  /* ---------------- 评价：打开弹窗（同一次合作只能评一次，已评价直接锁死） ---------------- */
+  onReviewTap: function (e) {
     const dataset = e.currentTarget.dataset;
     const revieweeOpenid = dataset.openid || '';
     const revieweeName = dataset.name || '对方';
@@ -351,29 +399,23 @@ Page({
       wx.showToast({ title: '找不到被评价人，请刷新后重试', icon: 'none' });
       return;
     }
+    if (!postId) {
+      wx.showToast({ title: '缺少帖子信息，请下拉刷新后重试', icon: 'none' });
+      return;
+    }
 
-    // 1) 先看内存缓存（刚拉过 mine，命中就秒开）
-    let review = store.findMyReviewTo(revieweeOpenid);
-
-    // 2) 缓存没有：再向云端确认一次（查本地/云端是否存在旧评价）
-    if (!review) {
-      wx.showLoading({ title: '加载中...' });
-      try {
-        review = await store.fetchMyReviewTo(revieweeOpenid);
-      } catch (err) {
-        console.error('[task] 查询历史评价失败：', err);
-        // 查询失败不阻止用户写评价：按「没有旧评价」处理，提交时云端仍会 upsert
-      } finally {
-        wx.hideLoading();
-      }
+    // 已评价：按钮本身已置灰（disabled），这里再拦一道（防旧界面 / 误触）
+    // 带上 revieweeOpenid：同一帖子里评了 B，不能连带锁住 C
+    if (store.hasReviewedPost(postId, revieweeOpenid)) {
+      wx.showToast({ title: constants.ALREADY_REVIEWED_MESSAGE, icon: 'none' });
+      return;
     }
 
     this.setData({
       reviewModalShow: true,
-      reviewIsUpdate: !!review,
       reviewTarget: { openid: revieweeOpenid, name: revieweeName, postId: postId },
-      reviewRating: review ? review.rating : -1,
-      reviewContent: review ? review.content : ''
+      reviewRating: -1,
+      reviewContent: ''
     });
   },
 
@@ -391,7 +433,6 @@ Page({
     if (this.data.reviewSubmitting) return; // 提交中不允许关闭，避免重复提交/闪回
     this.setData({
       reviewModalShow: false,
-      reviewIsUpdate: false,
       reviewRating: -1,
       reviewContent: '',
       reviewTarget: { openid: '', name: '', postId: '' }
@@ -401,7 +442,7 @@ Page({
   // 弹窗卡片自身吞掉点击，避免点内容区也关窗
   noop: function () {},
 
-  /* ---------------- 评价：提交（云端 upsert，A 对 B 永远只有一条） ---------------- */
+  /* ---------------- 评价：提交（云端查重后只 add，提交后不可修改） ---------------- */
   submitReview: async function () {
     if (this.data.reviewSubmitting) return;
 
@@ -416,8 +457,17 @@ Page({
       wx.showToast({ title: '缺少被评价人，请重新打开', icon: 'none' });
       return;
     }
+    if (!target.postId) {
+      wx.showToast({ title: '缺少帖子信息，请下拉刷新后重试', icon: 'none' });
+      return;
+    }
+    // 提交前再确认一次（防同一账号另一台设备已经评过）；按键 = 帖子 + 被评价人
+    if (store.hasReviewedPost(target.postId, target.openid)) {
+      this.lockReviewedButton();
+      wx.showToast({ title: constants.ALREADY_REVIEWED_MESSAGE, icon: 'none' });
+      return;
+    }
 
-    const isUpdate = this.data.reviewIsUpdate;
     this.setData({ reviewSubmitting: true });
 
     try {
@@ -431,21 +481,56 @@ Page({
       this.setData({
         reviewSubmitting: false,
         reviewModalShow: false,
-        reviewIsUpdate: false,
         reviewRating: -1,
         reviewContent: '',
         reviewTarget: { openid: '', name: '', postId: '' }
       });
 
-      this.renderList(); // 按钮立刻变成「更新评价」+ 已评价标记
-      wx.showToast({ title: isUpdate ? '评价已更新' : '评价已提交', icon: 'none' });
+      this.lockReviewedButton(); // 按钮立刻变【已评价】+ 置灰
+      wx.showToast({ title: '评价已提交', icon: 'none' });
     } catch (err) {
       this.setData({ reviewSubmitting: false });
-      console.error('[task] 提交评价失败：', err);
+      console.error('[task] 提交评价失败 code=' + ((err && err.code) || '') + '：', err);
+
+      // 云端判定「本次合作已评价」：先本地锁定这条帖子，再拉一遍 mine 回缓存并重渲染
+      if (err && err.code === 'ALREADY_REVIEWED') {
+        this.lockReviewLocally(target.postId, target.openid);
+        this.setData({
+          reviewModalShow: false,
+          reviewRating: -1,
+          reviewContent: '',
+          reviewTarget: { openid: '', name: '', postId: '' }
+        });
+        try {
+          await store.syncMyReviews();
+        } catch (syncErr) {
+          console.warn('[task] 已评价状态同步失败，按本地缓存渲染：', syncErr);
+        }
+        this.lockReviewedButton();
+      }
+
       wx.showToast({
         title: (err && err.message) || '评价提交失败，请稍后重试',
         icon: 'none'
       });
     }
+  },
+
+  // 提交成功 / 云端已评价：重渲染列表，按钮变【已评价】并置灰
+  lockReviewedButton: function () {
+    this.renderList();
+  },
+
+  /* 页面临时锁定：云端说「已评价」但 mine 还没拉回来时，也不能让按钮再亮起来。
+     键 = postId + revieweeOpenid —— 只锁「这条帖子里的这个人」，不能让同帖的 C 也跟着变灰 */
+  isReviewLocked: function (postId, revieweeOpenid) {
+    if (!postId || !revieweeOpenid) return false;
+    return !!(this.reviewedPostIds && this.reviewedPostIds[postId + '|' + revieweeOpenid]);
+  },
+
+  lockReviewLocally: function (postId, revieweeOpenid) {
+    if (!postId || !revieweeOpenid) return;
+    this.reviewedPostIds = this.reviewedPostIds || {};
+    this.reviewedPostIds[postId + '|' + revieweeOpenid] = true;
   }
 });

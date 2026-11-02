@@ -409,6 +409,7 @@ exports.main = async (event) => {
     contact: contact,
     status: 'active', // 机审通过即上线（进行中）
     heat: 0,
+    reportWeight: 0, // 举报权重（v1.2.0 风控）：新帖子从 0 开始，每条新举报 +1
     createTime: now,
     // 留痕：机审结论，事后被举报时方便判断是「漏审」还是「改了内容」
     secCheck: {

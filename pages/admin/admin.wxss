@@ -1,0 +1,318 @@
+/* pages/admin/admin.wxss */
+page {
+  height: 100vh;
+  background-color: #f5f6f8;
+}
+
+/* 整体：固定 Tab 栏 + 下方滚动列表（与大厅同一套布局约定） */
+.admin {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+
+/* ---------- 顶部 Tab ---------- */
+.tab-bar {
+  flex-shrink: 0;
+  height: 96rpx;
+  box-sizing: border-box;
+  padding: 16rpx 20rpx;
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  background-color: #f5f6f8;
+}
+
+.tab-item {
+  flex: 1;
+  min-width: 0;
+  height: 64rpx;
+  line-height: 64rpx;
+  text-align: center;
+  font-size: 27rpx;
+  color: var(--color-sub, #8A8A8A);
+  border-radius: 12rpx;
+  white-space: nowrap;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.tab-item-active {
+  background-color: #ffffff;
+  color: #07c160;
+  font-weight: bold;
+  box-shadow: 0 2rpx 8rpx rgba(0, 0, 0, 0.06);
+}
+
+.scrollarea {
+  height: calc(100vh - 96rpx);
+  box-sizing: border-box;
+}
+
+.container {
+  padding: 20rpx;
+  padding-bottom: 120rpx;
+  display: flex;
+  flex-direction: column;
+  gap: 20rpx;
+}
+
+/* ---------- 通用提示 / 空态 / 错误 ---------- */
+.hint {
+  font-size: 22rpx;
+  color: #a8a8a8;
+  line-height: 1.6;
+  padding: 0 8rpx;
+}
+
+.loading-text {
+  font-size: 26rpx;
+  color: #a8a8a8;
+  text-align: center;
+  padding: 40rpx 0;
+}
+
+.empty-card {
+  background-color: #ffffff;
+  border-radius: var(--radius-card, 24rpx);
+  box-shadow: var(--shadow-card, 0 4rpx 16rpx rgba(0, 0, 0, 0.03));
+  padding: 60rpx 32rpx;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16rpx;
+}
+
+.empty-emoji {
+  font-size: 56rpx;
+  line-height: 1;
+}
+
+.empty-text {
+  font-size: 26rpx;
+  color: #b0b0b0;
+}
+
+/* 错误提示：面向管理员，可以直说「云函数没部署」这类原因 */
+.error-card {
+  background-color: #fdeceb;
+  border: 1rpx solid #f8c9c4;
+  color: #c0392b;
+  border-radius: var(--radius-card, 24rpx);
+  padding: 24rpx 28rpx;
+  font-size: 24rpx;
+  line-height: 1.6;
+}
+
+/* ---------- 举报卡片 ---------- */
+.report-card,
+.user-card {
+  background-color: #ffffff;
+  border-radius: var(--radius-card, 24rpx);
+  box-shadow: var(--shadow-card, 0 4rpx 16rpx rgba(0, 0, 0, 0.03));
+  padding: 28rpx 32rpx;
+}
+
+.report-head,
+.user-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16rpx;
+  margin-bottom: 16rpx;
+}
+
+.report-title,
+.user-name {
+  font-size: 30rpx;
+  font-weight: bold;
+  color: var(--color-title, #1A1A1A);
+  line-height: 1.45;
+  word-break: break-all;
+}
+
+/* 用户名在卡片头部横排里占满剩余宽度 */
+.user-name {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 举报卡片里的标题在竖排 wrap 里，不参与横向伸缩 */
+.report-title {
+  display: block;
+}
+
+/* 标题区：标题 + 「查看帖子详情」小字，整块可点（点击热区更大） */
+.report-title-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+  border-radius: 12rpx;
+}
+
+.report-title-hover {
+  background-color: #f7f8fa;
+}
+
+.report-title-link {
+  font-size: 22rpx;
+  color: #07c160;
+  line-height: 1.4;
+}
+
+/* 帖子状态徽章 */
+.status-badge {
+  flex-shrink: 0;
+  font-size: 20rpx;
+  line-height: 1;
+  padding: 8rpx 14rpx;
+  border-radius: 6rpx;
+  color: #07c160;
+  background-color: #e8f8ec;
+  white-space: nowrap;
+}
+
+.status-badge-auditing {
+  color: #b26a00;
+  background-color: #fff8e6;
+}
+
+.status-badge-deleted {
+  color: #8A8A8A;
+  background-color: #f2f3f5;
+}
+
+.meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16rpx;
+  margin-top: 8rpx;
+}
+
+.meta-row-last {
+  margin-bottom: 4rpx;
+}
+
+.meta-item {
+  font-size: 24rpx;
+  color: #8A8A8A;
+  line-height: 1.6;
+  word-break: break-all;
+}
+
+.meta-time {
+  flex-shrink: 0;
+  white-space: nowrap;
+  color: #bbbbbb;
+}
+
+.report-desc {
+  margin-top: 12rpx;
+  font-size: 26rpx;
+  color: #444444;
+  line-height: 1.6;
+  background-color: #f7f8fa;
+  border-radius: 12rpx;
+  padding: 16rpx 20rpx;
+  word-break: break-all;
+}
+
+/* 举报人没写补充说明：灰字占位，保持卡片结构一致 */
+.report-desc-empty {
+  color: #bbbbbb;
+}
+
+/* ---------- 操作按钮 ---------- */
+.action-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 20rpx;
+  margin-top: 24rpx;
+}
+
+.btn {
+  min-width: 180rpx;
+  height: 68rpx;
+  line-height: 68rpx;
+  text-align: center;
+  font-size: 26rpx;
+  font-weight: bold;
+  border-radius: var(--radius-btn, 12rpx);
+  padding: 0 24rpx;
+}
+
+.btn-hover {
+  opacity: 0.8;
+}
+
+.btn-ghost {
+  color: #8A8A8A;
+  background-color: #f2f3f5;
+}
+
+.btn-danger {
+  color: #ffffff;
+  background-color: #e53935;
+}
+
+/* ---------- 学号申诉 ---------- */
+.search-card {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  background-color: #ffffff;
+  border-radius: var(--radius-card, 24rpx);
+  box-shadow: var(--shadow-card, 0 4rpx 16rpx rgba(0, 0, 0, 0.03));
+  padding: 20rpx;
+}
+
+.search-input {
+  flex: 1;
+  min-width: 0;
+  height: 76rpx;
+  box-sizing: border-box;
+  font-size: 28rpx;
+  color: #333333;
+  background-color: #f7f8fa;
+  border-radius: 12rpx;
+  padding: 0 20rpx;
+}
+
+.search-btn {
+  flex-shrink: 0;
+  width: 150rpx;
+  height: 76rpx;
+  line-height: 76rpx;
+  text-align: center;
+  font-size: 28rpx;
+  font-weight: bold;
+  color: #ffffff;
+  background-color: #07c160;
+  border-radius: var(--radius-btn, 12rpx);
+}
+
+/* 角色徽章 */
+.role-badge {
+  flex-shrink: 0;
+  font-size: 20rpx;
+  line-height: 1;
+  padding: 8rpx 14rpx;
+  border-radius: 6rpx;
+  color: #8A8A8A;
+  background-color: #f2f3f5;
+  white-space: nowrap;
+}
+
+.role-admin {
+  color: #1e88e5;
+  background-color: #e6f0ff;
+}
+
+.role-banned {
+  color: #e53935;
+  background-color: #fdeceb;
+}

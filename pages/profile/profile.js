@@ -41,6 +41,8 @@ Page({
     resume: '',
     contact: '',
     isProfileReady: false, // 昵称 + 联系方式 + 广工学号格式均合格才为 true
+    // 仅 role === 'admin' 为 true：决定是否显示【进入管理后台】入口（真正的权限校验在 admin 云函数）
+    isAdmin: false,
 
     // ---- 收到的评价（reviews 集合，全部匿名） ----
     reviewTotal: 0,                        // 收到多少条评价（含没写文字的）
@@ -70,6 +72,7 @@ Page({
         resume: '',
         contact: '',
         isProfileReady: false,
+        isAdmin: false,
         reviewTotal: 0,
         reviewGoodCount: 0,
         reviewRate: 0,
@@ -98,7 +101,9 @@ Page({
       resume: profile.resume || '',
       contact: profile.contact || '',
       // 严格判定：昵称 + 联系方式 + 学号格式（与 guard / 发布 / 申请同一套规则）
-      isProfileReady: store.isProfileReady()
+      isProfileReady: store.isProfileReady(),
+      // 管理员入口：role 由云端 users 集合提供，客户端只能读
+      isAdmin: store.isAdmin()
     });
 
     // 评价单独拉：reviews 拉取失败不影响资料表单可用
@@ -306,6 +311,20 @@ Page({
         });
       }
     }
+  },
+
+  /**
+   * 进入管理后台（仅管理员可见）
+   * 页面自身还会再校验一次：万一是改包把按钮调出来，云函数也会直接回 FORBIDDEN
+   */
+  onAdminTap: function () {
+    wx.navigateTo({
+      url: '/pages/admin/admin',
+      fail: function (err) {
+        console.error('[admin] 打开管理后台失败：', err);
+        wx.showToast({ title: '页面打开失败，请稍后重试', icon: 'none' });
+      }
+    });
   },
 
   /**

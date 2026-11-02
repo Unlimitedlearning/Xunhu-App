@@ -103,6 +103,15 @@
       <view class="empty-review" wx:if="{{reviews.length === 0}}">{{reviewEmptyText}}</view>
     </view>
 
+    <!-- 管理员入口：仅 role === 'admin' 显示（reports / users 禁读，后台所有操作走 admin 云函数） -->
+    <view class="admin-entry" wx:if="{{isAdmin}}" hover-class="admin-entry-hover" hover-stay-time="80" bindtap="onAdminTap">
+      <view class="admin-entry-left">
+        <text class="admin-entry-label">进入管理后台</text>
+        <text class="admin-entry-sub">举报审查 / 学号申诉</text>
+      </view>
+      <text class="admin-entry-arrow">›</text>
+    </view>
+
     <view class="logout-btn" bindtap="handleLogout">退出登录</view>
 
   </block>

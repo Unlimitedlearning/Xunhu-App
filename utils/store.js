@@ -10,6 +10,8 @@
 //   3) 热度：走云函数 heat 做原子自增（别人的帖子客户端没有写权限，必须走服务端）。
 //   4) 发布：走云函数 publish（内容安全机审 + status 直接 active，服务端定 status/authorName）；
 //      举报：走云函数 report（写 reports 集合 + 帖子改 auditing）；
+//      申请：走云函数 application（apply / updateStatus / list，服务端校验 receiverId 防越权，
+//            并联查 users 下发申请人昵称 / 简历 / 附言）；
 //      登录态标记 / 草稿 / 热度防刷记录 留在本地 Storage；
 //      用户资料（昵称/学号/简历/联系方式）走云端 users 集合（云函数 user 读写），
 //      前端不再保留任何写死的身份或默认资料。
@@ -132,13 +134,28 @@ function normalizePost(doc) {
   });
 }
 
+// 申请文档归一化：云函数 application.list 下发的字段名（applicantContact / applicantStudentId /
+// applyNote / postTitle / postStatus …）+ 老版本直读数据库的字段名，两套都要兼容，
+// 页面永远拿到同一套字段，不需要再判 undefined。
 function normalizeApplication(doc) {
-  return Object.assign({}, doc, {
-    id: doc._id,
-    postId: doc.postId || '',
-    applicantContact: doc.applicantContact || '',
-    applicantStudentId: doc.applicantStudentId || '',
-    createTime: doc.createTime || 0
+  const raw = doc || {};
+  return Object.assign({}, raw, {
+    id: raw.id || raw._id || '',
+    postId: raw.postId || '',
+    postTitle: raw.postTitle || '',
+    postStatus: raw.postStatus || '',
+    applicantId: raw.applicantId || raw._openid || '',
+    applicantName: raw.applicantName || '',
+    applicantResume: raw.applicantResume || '',
+    applicantContact: raw.applicantContact || '',
+    applicantStudentId: raw.applicantStudentId || '',
+    applyNote: raw.applyNote || '',
+    authorName: raw.authorName || '',
+    authorOpenid: raw.authorOpenid || '',
+    contact: raw.contact || '',
+    status: raw.status || 'pending',
+    createTime: raw.createTime || 0,
+    statusUpdateTime: raw.statusUpdateTime || 0
   });
 }
 
@@ -228,40 +245,8 @@ async function pullPosts() {
   }
 }
 
-/**
- * applications 用了自定义安全规则（doc._openid == auth.openid || doc.receiverId == auth.openid），
- * 这种集合**不能**直接 orderBy().get()：无条件查询无法证明「可读」，云端直接 -502003。
- * 正确做法是拆成两次带 where 的查询再合并（我发出的 / 我收到的）。
- */
-async function pullApplications() {
-  try {
-    const openid = await fetchOpenid();
-    const result = await Promise.all([
-      fetchPaged(COLLECTIONS.APPLICATIONS, { _openid: openid }),
-      fetchPaged(COLLECTIONS.APPLICATIONS, { receiverId: openid })
-    ]);
-
-    // 两条查询可能重叠（自己给自己发申请），按 _id 去重
-    const seen = {};
-    const rows = [];
-    result[0].concat(result[1]).forEach(function (doc) {
-      if (!doc || !doc._id || seen[doc._id]) return;
-      seen[doc._id] = true;
-      rows.push(doc);
-    });
-
-    cache.applications = rows
-      .map(normalizeApplication)
-      .sort(function (a, b) { return (b.createTime || 0) - (a.createTime || 0); });
-    cache.applicationsError = null;
-    writeSnapshot(STORAGE_KEYS.CACHE_APPLICATIONS, cache.applications); // 缓存先行：落盘快照
-    return cache.applications;
-  } catch (err) {
-    reportFetchError(COLLECTIONS.APPLICATIONS, err);
-    cache.applicationsError = err;
-    throw err;
-  }
-}
+/* 删除说明：旧的「两次 where 直读」实现已搬到下方 applications 区块的 pullApplicationsDirect()，
+   作为「application 云函数未部署」时的降级通道；列表主通道现在是云函数（要联查 users）。 */
 
 async function seedDemoData() {
   const posts = (mockData && mockData.postList) || [];
@@ -554,7 +539,47 @@ async function endPost(postId) {
   return now;
 }
 
-/* ---------------- 申请 applications ---------------- */
+/* ---------------- 申请 applications（读与写全部走云函数 application） ----------------
+   设计变更（v1.3.0，修复真机两个致命 Bug）：
+     1) 「同意 / 拒绝」以前是客户端 doc(id).update() 直写。收帖人改的是**别人创建**的文档，
+        权限完全靠控制台那条自定义安全规则；规则一有偏差就是 -502003，页面只能提示「操作失败」。
+        现在写入全部收到 cloudfunctions/application，越权判定写进代码（receiverId === openid）。
+     2) 申请人昵称 / 简历 / 附言必须和 users 联查，而 users 对客户端不可读 —— 前端拿不到这条通道，
+        所以改由服务端联查后整张卡片下发。*/
+
+// 统一调用 application 云函数，把「函数未部署」「业务校验失败」都变成可捕获的错误
+async function callApplicationFunction(data) {
+  let res;
+  try {
+    res = await wx.cloud.callFunction({ name: CLOUD_FUNCTIONS.APPLICATION, data: data });
+  } catch (err) {
+    const wrapped = new Error('application 云函数调用失败，请确认已上传并部署');
+    wrapped.code = 'FUNCTION_CALL_FAILED';
+    wrapped.cause = err;
+    throw wrapped;
+  }
+
+  const result = (res && res.result) || {};
+  if (!result.ok) {
+    const err = new Error(result.message || '申请操作失败，请稍后重试');
+    err.code = result.code || 'APPLICATION_FAILED';
+    err.hitWord = result.hitWord || '';
+    throw err;
+  }
+  return result;
+}
+
+// 两个 Tab 的数据合并成一份缓存（详情页判断「我有没有申请过」要看全集）
+function mergeApplications(sent, received) {
+  const seen = {};
+  const merged = [];
+  (sent || []).concat(received || []).forEach(function (app) {
+    if (!app || !app.id || seen[app.id]) return;
+    seen[app.id] = true;
+    merged.push(app);
+  });
+  return merged.sort(function (a, b) { return (b.createTime || 0) - (a.createTime || 0); });
+}
 
 // 同步读：内存缓存
 function getApplications() {
@@ -571,32 +596,148 @@ function getApplicationsError() {
   return cache.applicationsError;
 }
 
-async function addApplication(application) {
-  await ensureInit();
-  const data = {
-    postId: application.postId,
-    applicantId: application.applicantId || cache.openid,
-    applicantName: application.applicantName || '',
-    applicantContact: application.applicantContact || '',
-    applicantStudentId: application.applicantStudentId || '',
-    receiverId: application.receiverId || '',
-    status: application.status || 'pending',
-    createTime: application.createTime || Date.now()
-  };
+/**
+ * 降级通道：云函数没部署 / 调用失败时，退回原来的两次 where 直读。
+ * 为什么保留：内测阶段真机上云函数没部署是常见事故，这里至少保证「同意 / 拒绝以外的
+ * 列表功能」不白屏。降级模式下拿不到附言与申请人简历（那需要 users 联查）。
+ */
+async function pullApplicationsDirect() {
+  const openid = await fetchOpenid();
+  const result = await Promise.all([
+    fetchPaged(COLLECTIONS.APPLICATIONS, { _openid: openid }),
+    fetchPaged(COLLECTIONS.APPLICATIONS, { receiverId: openid })
+  ]);
 
-  const res = await col(COLLECTIONS.APPLICATIONS).add({ data });
-  await pullApplications();
-  return Object.assign({}, data, { id: res._id });
+  // 两条查询可能重叠，按 _id 去重
+  const seen = {};
+  const rows = [];
+  result[0].concat(result[1]).forEach(function (doc) {
+    if (!doc || !doc._id || seen[doc._id]) return;
+    seen[doc._id] = true;
+    rows.push(doc);
+  });
+
+  cache.applications = rows
+    .map(normalizeApplication)
+    .sort(function (a, b) { return (b.createTime || 0) - (a.createTime || 0); });
+  writeSnapshot(STORAGE_KEYS.CACHE_APPLICATIONS, cache.applications);
+  return cache.applications;
 }
 
-// 同意 / 拒绝：只有「收到申请的人」需要更新，所以要在安全规则里放行 receiverId
-async function updateApplicationStatus(applicationId, status) {
-  if (!applicationId) return;
+async function pullApplications() {
+  try {
+    const result = await callApplicationFunction({ action: 'list' });
+    cache.applications = mergeApplications(
+      (result.sent || []).map(normalizeApplication),
+      (result.received || []).map(normalizeApplication)
+    );
+    cache.applicationsError = null;
+    writeSnapshot(STORAGE_KEYS.CACHE_APPLICATIONS, cache.applications); // 缓存先行：落盘快照
+    return cache.applications;
+  } catch (err) {
+    console.error('[store] application 云函数拉取失败（是否已上传并部署 cloudfunctions/application？），' +
+      '改用直读数据库降级（降级模式看不到申请附言与申请人简历）：', err);
+  }
+
+  // 降级：云函数不可用时直读（read 规则仍保留，不影响列表展示）
+  try {
+    const list = await pullApplicationsDirect();
+    cache.applicationsError = null;
+    return list;
+  } catch (err) {
+    reportFetchError(COLLECTIONS.APPLICATIONS, err);
+    cache.applicationsError = err;
+    throw err;
+  }
+}
+
+/**
+ * 提交申请（附言必填）
+ * 申请人昵称 / 学号 / 联系方式 / 简历全部由服务端取 users 真实资料，前端只传 postId + applyNote。
+ * @param {{postId:string, applyNote:string}} application
+ */
+async function addApplication(application) {
+  const postId = (application && application.postId) || '';
+  const applyNote = ((application && application.applyNote) || '').trim();
+
+  if (!postId) throw new Error('缺少帖子信息，请返回详情页重试');
+  if (!applyNote) {
+    const err = new Error('请填写申请附言后再提交');
+    err.code = 'APPLY_NOTE_REQUIRED';
+    throw err;
+  }
+
   await ensureInit();
-  await col(COLLECTIONS.APPLICATIONS).doc(applicationId).update({
-    data: { status: status }
+  const result = await callApplicationFunction({
+    action: 'apply',
+    postId: postId,
+    applyNote: applyNote.slice(0, constants.APPLY_NOTE_MAX)
   });
-  await pullApplications();
+
+  // 云端已落库：重新拉一次，任务页两边都能立刻看到这条申请
+  try {
+    await pullApplications();
+  } catch (err) {
+    console.warn('[store] 申请已提交，但列表刷新失败（下次进任务页会重拉）：', err);
+  }
+
+  return {
+    id: result.id || '',
+    postId: postId,
+    applicantId: cache.openid,
+    applyNote: applyNote,
+    status: result.status || 'pending'
+  };
+}
+
+/**
+ * 同意 / 拒绝（只有「收到申请的人」能调，越权拦在云函数的 receiverId 校验里）
+ * 返回云端最新结论；同时把缓存里的状态先改掉，页面 renderList 能立刻渲染出
+ * 「已同意 + 联系方式已解锁」，不用等下一次拉取。
+ * @param {string} applicationId 申请文档 _id
+ * @param {'accepted'|'rejected'} status
+ */
+async function updateApplicationStatus(applicationId, status) {
+  if (!applicationId) {
+    const err = new Error('缺少申请信息，请下拉刷新后重试');
+    err.code = 'APPLICATION_ID_REQUIRED';
+    throw err;
+  }
+  if (status !== 'accepted' && status !== 'rejected') {
+    const err = new Error('只能同意或拒绝该申请');
+    err.code = 'STATUS_INVALID';
+    throw err;
+  }
+
+  await ensureInit();
+  const result = await callApplicationFunction({
+    action: 'updateStatus',
+    applicationId: applicationId,
+    status: status
+  });
+
+  // 1) 先同步缓存：页面 await 完就能立即渲染，联系人立刻可见
+  const cached = cache.applications.find(function (item) {
+    return item && item.id === applicationId;
+  });
+  if (cached) {
+    cached.status = result.status || status;
+    cached.statusUpdateTime = result.statusUpdateTime || Date.now();
+    if (result.applicantName) cached.applicantName = result.applicantName;
+    if (result.applicantResume) cached.applicantResume = result.applicantResume;
+    if (result.applicantContact) cached.applicantContact = result.applicantContact;
+    if (result.applicantStudentId) cached.applicantStudentId = result.applicantStudentId;
+    writeSnapshot(STORAGE_KEYS.CACHE_APPLICATIONS, cache.applications);
+  }
+
+  // 2) 再静默拉一次全量（拿到帖子/简历的最新联查结果），失败不影响本次操作结果
+  try {
+    await pullApplications();
+  } catch (err) {
+    console.warn('[store] 状态已更新，但列表刷新失败（已用本地缓存兜底）：', err);
+  }
+
+  return result;
 }
 
 /* ---------------- 热度 heat ---------------- */
@@ -698,15 +839,19 @@ async function callUserFunction(data) {
   return result;
 }
 
-// 只有昵称非空的文档才算「有资料」（资料不完整时仍返回对象，表单能带出已填的部分）；
-// 是否「完善」（昵称 + 联系方式都非空）由 isProfileReady() 判定。
+// 云端文档 -> 内存对象；没有文档才是 null（文档存在但昵称没填时仍返回对象，表单能带出已填的部分）。
+// 是否「完善」（昵称 + 联系方式 + 学号）由 isProfileReady() 判定；
+// role / warningCount 只用于展示（管理后台入口、警告次数），写入永远只能走云函数或控制台。
 function normalizeProfile(doc) {
-  if (!doc || !doc.nickname) return null;
+  if (!doc) return null;
   return {
     nickname: doc.nickname || '',
     studentId: doc.studentId || '',
     resume: doc.resume || '',
     contact: doc.contact || '',
+    // 角色 / 警告次数只读展示（写只能来自云函数或控制台）
+    role: String(doc.role || 'user').toLowerCase(),
+    warningCount: Number(doc.warningCount) || 0,
     updateTime: doc.updateTime || 0
   };
 }
@@ -819,8 +964,11 @@ async function submitReport(report) {
 }
 
 /* ---------------- 评价 reviews（云端集合，云函数 review 读写） ----------------
-   防刷规则完全在云端：A 对 B 只能有一条记录（不存在 add / 已存在 update 覆盖）。
-   客户端这边只负责：标记「我是否已经评价过 TA」、弹窗回填、把匿名评价交给个人页。
+   防刷规则完全在云端：同一个帖子 + 同一个被评价人，一个评价人只能提交一次
+   （一个帖子招多个队友时，B 和 C 要能分别评）；写入前先查
+   postId + reviewerOpenid + revieweeOpenid，已存在直接回 ALREADY_REVIEWED，
+   **只有 add、没有 update** —— 提交后不可修改。
+   客户端这边只负责：标记「这条帖子里的这个人我是否已经评价过」、把匿名评价交给个人页。
    reviews 建议权限「所有用户不可读写」—— 客户端拿不到任何 review 文档，匿名性才可靠。*/
 
 function normalizeReview(doc) {
@@ -857,23 +1005,34 @@ async function callReviewFunction(data) {
   return result;
 }
 
-// 同步读：我已发出的评价（内存缓存）
+// 同步读：我发出的评价（内存缓存）
 function getMyReviews() {
   return cache.myReviews.slice();
 }
 
-// 同步读：我对某人的旧评价（有就说明按钮应该是「更新评价」）
-function findMyReviewTo(revieweeOpenid) {
-  if (!revieweeOpenid) return null;
+// 同步读：我对「这条帖子里的这个人」是不是已经评价过了
+// 查重主键是 postId + revieweeOpenid —— 一个帖子招多个队友时，B 和 C 要能分别评，
+// 与云端 handleSubmit 的 where 条件保持一致
+// 只传 postId 时退化成「这条帖子我评过任何人没」，仅供调试/排障用
+function findMyReviewByPost(postId, revieweeOpenid) {
+  if (!postId) return null;
+  const reviewee = revieweeOpenid || '';
   return cache.myReviews.find(function (item) {
-    return item.revieweeOpenid === revieweeOpenid;
+    if (item.postId !== postId) return false;
+    return reviewee ? item.revieweeOpenid === reviewee : true;
   }) || null;
+}
+
+// 同步读：「这条帖子里我对这个人」能不能再评（按钮置灰判定）
+// 必须带上 revieweeOpenid：否则评了 B 之后 C 的按钮也会被误锁
+function hasReviewedPost(postId, revieweeOpenid) {
+  return !!findMyReviewByPost(postId, revieweeOpenid);
 }
 
 function mergeMyReview(review) {
   if (!review) return;
   const index = cache.myReviews.findIndex(function (item) {
-    return item.revieweeOpenid === review.revieweeOpenid;
+    return item.postId === review.postId && item.revieweeOpenid === review.revieweeOpenid;
   });
   if (index > -1) {
     cache.myReviews[index] = review;
@@ -894,33 +1053,49 @@ async function syncMyReviews() {
 }
 
 /**
- * 单条查询：我对 TA 的旧评价（弹窗回填用）
- * 先看页面拿到的缓存，缓存没有才向云端确认 —— 避免依赖陈旧缓存而重复新增
+ * 单条查询：我对「这条帖子里的这个人」是否已经评价过（云端确认）
+ * 先看内存缓存，缓存没有才向云端确认 —— 避免依赖陈旧缓存把已评价的按钮又点亮
+ * @param {string} postId
+ * @param {string} revieweeOpenid 被评价人（一个帖子可能招多人，必须带）
+ * @return {Promise<object|null>}
  */
-async function fetchMyReviewTo(revieweeOpenid) {
-  if (!revieweeOpenid) return null;
+async function fetchMyReviewByPost(postId, revieweeOpenid) {
+  if (!postId || !revieweeOpenid) return null;
   await ensureInit();
-  const result = await callReviewFunction({ action: 'get', revieweeOpenid: revieweeOpenid });
+  const result = await callReviewFunction({
+    action: 'get',
+    postId: postId,
+    revieweeOpenid: revieweeOpenid
+  });
   const review = result.review ? normalizeReview(result.review) : null;
 
+  // 云端说没有 -> 清掉缓存里这条「帖子 + 这个人」的旧记录；有 -> 合并进缓存
   const index = cache.myReviews.findIndex(function (item) {
-    return item.revieweeOpenid === revieweeOpenid;
+    return item.postId === postId && item.revieweeOpenid === revieweeOpenid;
   });
   if (review) {
     mergeMyReview(review);
   } else if (index > -1) {
-    cache.myReviews.splice(index, 1); // 云端已经没有这条了，缓存也跟着清
+    cache.myReviews.splice(index, 1);
   }
   return review;
 }
 
 /**
- * 提交 / 更新评价（云端 upsert）
+ * 提交评价（云端查重后只 add，提交后不可修改）
+ * 重复提交时云端回 `ALREADY_REVIEWED`，store 把它原样抛给页面展示
  * @param {{postId:string, revieweeOpenid:string, rating:number, content:string}} input
  */
 async function submitReview(input) {
   const revieweeOpenid = (input && input.revieweeOpenid) || '';
   if (!revieweeOpenid) throw new Error('缺少被评价人');
+
+  const postId = ((input && input.postId) || '').trim();
+  if (!postId) {
+    const err = new Error('缺少帖子信息，请刷新后重试');
+    err.code = 'POST_ID_REQUIRED';
+    throw err;
+  }
 
   const rating = Number(input.rating);
   if (rating !== 1 && rating !== 0) {
@@ -932,7 +1107,7 @@ async function submitReview(input) {
   await ensureInit();
   const result = await callReviewFunction({
     action: 'submit',
-    postId: (input.postId || '').trim(),
+    postId: postId,
     revieweeOpenid: revieweeOpenid,
     rating: rating,
     content: (input.content || '').trim().slice(0, constants.REVIEW_CONTENT_MAX)
@@ -1060,6 +1235,111 @@ async function fetchAuthorProfile(input) {
   return normalizeAuthorCard(result);
 }
 
+// 当前用户是不是管理员（role 由 users 集合提供，前端只用来决定是否显示「进入管理后台」入口）
+function isAdmin() {
+  return !!(cache.profile && String(cache.profile.role || '').toLowerCase() === 'admin');
+}
+
+/* ---------------- 管理后台（云函数 admin） ----------------
+   reports / users 对客户端「所有用户不可读写」，因此后台的列表、搜索、惩罚全部只能走云函数；
+   客户端只负责把结果渲染成卡片。role === 'admin' 的校验在云函数第一行，前端藏按钮只是体验层。*/
+
+async function callAdminFunction(data) {
+  let res;
+  try {
+    res = await wx.cloud.callFunction({ name: CLOUD_FUNCTIONS.ADMIN, data: data });
+  } catch (err) {
+    const wrapped = new Error('admin 云函数调用失败，请确认已上传并部署');
+    wrapped.code = 'FUNCTION_CALL_FAILED';
+    wrapped.cause = err;
+    throw wrapped;
+  }
+
+  const result = (res && res.result) || {};
+  if (!result.ok) {
+    const err = new Error(result.message || '后台操作失败，请稍后重试');
+    err.code = result.code || 'ADMIN_FAILED';
+    throw err;
+  }
+  return result;
+}
+
+// 待处理举报列表（云端已联查帖子标题 / 状态 / 权重）
+async function fetchAdminReports() {
+  await ensureInit();
+  const result = await callAdminFunction({ action: 'getReports' });
+  return {
+    total: Number(result.total) || 0,
+    list: Array.isArray(result.list) ? result.list : []
+  };
+}
+
+/**
+ * 处理一条举报
+ * @param {'ignore'|'violate'} action ignore = 忽略（权重 -1）/ violate = 确认违规（权重 +2 + 警告）
+ */
+async function adminHandleReport(action, input) {
+  if (action !== 'ignore' && action !== 'violate') {
+    const err = new Error('未知的处罚动作');
+    err.code = 'ACTION_INVALID';
+    throw err;
+  }
+
+  const reportId = (input && input.reportId) || '';
+  const postId = (input && input.postId) || '';
+  if (!reportId) {
+    const err = new Error('缺少举报记录 ID');
+    err.code = 'REPORT_ID_REQUIRED';
+    throw err;
+  }
+
+  await ensureInit();
+  const result = await callAdminFunction({
+    action: action,
+    reportId: reportId,
+    postId: postId
+  });
+
+  // 帖子状态 / 权重已经变了，顺手刷一次帖子缓存（失败不影响后台操作结果）
+  try {
+    await pullPosts();
+  } catch (err) {
+    console.warn('[store] 后台操作后刷新帖子缓存失败：', err);
+  }
+
+  return result;
+}
+
+// 按学号查绑定者（可能是多条：历史脏数据，后台逐条展示）
+async function adminSearchUser(studentId) {
+  const value = String(studentId || '').trim();
+  if (!value) {
+    const err = new Error('请输入学号');
+    err.code = 'STUDENT_ID_REQUIRED';
+    throw err;
+  }
+
+  await ensureInit();
+  const result = await callAdminFunction({ action: 'searchUser', studentId: value });
+  return {
+    total: Number(result.total) || 0,
+    list: Array.isArray(result.list) ? result.list : []
+  };
+}
+
+// 强制解绑学号（申诉处理）：把目标用户 studentId 置空，写 admin_logs
+async function adminUnbind(targetOpenid) {
+  const openid = String(targetOpenid || '').trim();
+  if (!openid) {
+    const err = new Error('缺少目标用户');
+    err.code = 'TARGET_REQUIRED';
+    throw err;
+  }
+
+  await ensureInit();
+  return callAdminFunction({ action: 'unbind', targetOpenid: openid });
+}
+
 /* ---------------- 登录态 ---------------- */
 
 function isLoggedIn() {
@@ -1146,8 +1426,9 @@ module.exports = {
   // reviews（双向评价，全部走云函数）
   getMyReviews,
   syncMyReviews,
-  findMyReviewTo,
-  fetchMyReviewTo,
+  findMyReviewByPost,
+  hasReviewedPost,
+  fetchMyReviewByPost,
   submitReview,
   syncReceivedReviews,
   getReceivedReviews,
@@ -1155,6 +1436,13 @@ module.exports = {
   // 发布者名片（详情页，云函数 getAuthorProfile）
   fetchAuthorProfile,
   emptyAuthorCard,
+
+  // 管理后台（云函数 admin，仅 role === 'admin' 可用）
+  isAdmin,
+  fetchAdminReports,
+  adminHandleReport,
+  adminSearchUser,
+  adminUnbind,
 
   // auth
   isLoggedIn,

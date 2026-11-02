@@ -352,6 +352,46 @@ page {
   padding: 20rpx 0;
 }
 
+/* ---------- 管理员入口（仅管理员可见） ---------- */
+.admin-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background-color: #ffffff;
+  border-radius: var(--radius-card, 24rpx);
+  box-shadow: var(--shadow-card, 0 4rpx 16rpx rgba(0, 0, 0, 0.03));
+  padding: 28rpx 32rpx;
+  border-left: 8rpx solid #07c160;
+}
+
+.admin-entry-hover {
+  background-color: #f7f8fa;
+}
+
+.admin-entry-left {
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+}
+
+.admin-entry-label {
+  font-size: 30rpx;
+  font-weight: bold;
+  color: var(--color-title, #1A1A1A);
+}
+
+.admin-entry-sub {
+  font-size: 22rpx;
+  color: var(--color-sub, #8A8A8A);
+}
+
+.admin-entry-arrow {
+  font-size: 32rpx;
+  color: #c8c9cc;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
 /* ---------- 退出登录 ---------- */
 .logout-btn {
   margin-top: 10rpx;

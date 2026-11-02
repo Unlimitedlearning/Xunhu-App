@@ -147,6 +147,66 @@ page {
   color: var(--color-sub, #8A8A8A);
 }
 
+/* ---------- 申请人信息（昵称 / 简历 / 申请附言） ---------- */
+.applicant-block {
+  margin-top: 16rpx;
+}
+
+.applicant-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12rpx;
+}
+
+.applicant-name {
+  font-size: 30rpx;
+  font-weight: bold;
+  color: var(--color-title, #1A1A1A);
+  word-break: break-all;
+}
+
+.applicant-tag {
+  font-size: 20rpx;
+  color: #07c160;
+  background-color: #e8f8ec;
+  padding: 4rpx 12rpx;
+  border-radius: 8rpx;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* 灰色底的信息块：简历 / 附言共用 */
+.note-block {
+  margin-top: 14rpx;
+  padding: 16rpx 20rpx;
+  background-color: #f7f8fa;
+  border-radius: 12rpx;
+}
+
+.note-block-apply {
+  background-color: #fffaf0;
+}
+
+.note-block-empty .note-text {
+  color: #b0b0b0;
+}
+
+.note-label {
+  display: block;
+  font-size: 22rpx;
+  color: var(--color-sub, #8A8A8A);
+  margin-bottom: 8rpx;
+}
+
+.note-text {
+  font-size: 26rpx;
+  color: #333333;
+  line-height: 1.6;
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+
 /* 已同意的联系方式 */
 .contact-box {
   display: flex;
@@ -311,16 +371,18 @@ page {
   background-color: #fff8e6;
 }
 
-/* 未评价：淡绿底；已评价：浅灰描边，表示可以点开更新 */
+/* 未评价：淡绿底；已评价：浅灰底 + 置灰不可点（提交后不可再修改，点了也不会弹表单） */
 .btn-review {
   background-color: #e8f8ec;
   color: #07c160;
 }
 
-.btn-review-done {
-  background-color: #f7f8fa;
-  color: #666666;
+.btn-review-done,
+.btn-review-done[disabled] {
+  background-color: #f2f3f5;
+  color: #999999;
   border: 1rpx solid #e5e5e5;
+  opacity: 1; /* 覆盖小程序 disabled 默认半透明，保证「已评价」三个字仍清晰可读 */
 }
 
 /* ---------- 评价弹窗 ---------- */

@@ -1,0 +1,9 @@
+{
+  "name": "admin",
+  "version": "1.0.0",
+  "description": "管理后台：举报审查 / 学号申诉（校验 role === admin）",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}

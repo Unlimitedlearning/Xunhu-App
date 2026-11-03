@@ -20,13 +20,22 @@
 //   { action: 'list', limit }            大厅列表（客户端对 posts 零权限，只能由这里下发）
 //                                         -> { ok: true, list: [...] }（白名单字段）
 //   { action: 'get', postId }             单条帖子（分享直达 / 缓存没命中）-> { ok: true, post }
-//   { action: 'end', postId }            结束自己的帖子 -> { ok: true, status: 'ended', endTime }
-//   { action: 'delete', postId }         删除自己的帖子（连带 post_contacts）-> { ok: true }
+//   { action: 'end', postId }            结束自己的帖子（仅 active）-> { ok: true, status: 'ended', endTime }
+//                                        审查中 -> { ok: false, code: 'POST_AUDITING' }
+//   { action: 'delete', postId }         删除自己的帖子（仅 active，连带 post_contacts）-> { ok: true }
+//                                        审查中 -> { ok: false, code: 'POST_AUDITING' }
 //   { action: 'contact', postId }        取联系方式（作者 / 已同意申请人）-> { ok: true, contact }
 //   { action: 'migrateContacts' }        【一次性迁移】把历史 posts.contact 搬到 post_contacts
 //                                        （只能从云开发控制台调用，或 role === 'admin' 的账号）
 //
 // 调用方：小程序端 store.endPost() / store.fetchPostContact()（页面不直接 callFunction）
+//
+// 【v1.7.2 安全修复】end / delete 增加状态闸门（此前只校验作者身份，没校验帖子状态）：
+//   漏洞路径：作者发违规内容 -> 被举报/机审进入 auditing -> 立刻自己「结束」或「删除」。
+//   end 会把帖子打进「往期历史」照常可读（绕过审核队列），delete 更是直接把被举报的内容销毁
+//   （后台审核卡片点开就是「信息不存在」，证据全丢）。
+//   现在：status === 'auditing' 一律直接拦截，不写任何字段；只有 active 才允许作者改状态。
+//   放行 / 下架的唯一决定权在 cloudfunctions/admin 的 approve / reject（role === 'admin' 校验）。
 
 const cloud = require('wx-server-sdk');
 
@@ -187,10 +196,17 @@ async function handleEnd(db, openid, event) {
   if (status === 'ended') {
     return { ok: true, status: 'ended', endTime: Number(post.endTime) || Date.now(), already: true };
   }
-  // 审查中的帖子不给作者自助操作：结束后的帖子会进「往期历史」照常可读，
-  // 如果允许结束，被举报的内容就绕过了审查队列。交给管理员在后台处理。
+  // 【v1.7.2】审查中的帖子绝对拦截（先判状态，再判完才写库）：
+  //   结束后的帖子会进「往期历史」照常可读，等于让被举报的内容绕过审核队列；
+  //   所以只要 status === 'auditing'，作者改不了任何状态，只能等管理员通过 / 下架。
   if (status === 'auditing') {
-    return { ok: false, code: 'POST_AUDITING', message: '该信息正在审查中，暂时无法操作' };
+    console.warn('[post][end] 审核中拦截 postId=' + postId + ' openid=' + openid);
+    return { ok: false, code: 'POST_AUDITING', message: '该信息正在审核中，无法自行操作' };
+  }
+  // 只有 active（进行中）才允许结束：draft / deleted / 未知状态一律不放行
+  if (status !== 'active') {
+    console.warn('[post][end] 状态不可操作拦截 status=' + (status || '(空)') + ' postId=' + postId + ' openid=' + openid);
+    return { ok: false, code: 'POST_NOT_ACTIVE', message: '该信息当前不可操作，请刷新后重试' };
   }
 
   const now = Date.now();
@@ -225,6 +241,20 @@ async function handleDelete(db, openid, event) {
   if (!author || author !== openid) {
     console.warn('[post][delete] 越权拦截：author=' + (author || '(空)') + ' openid=' + openid);
     return { ok: false, code: 'NOT_AUTHOR', message: '只能操作自己发布的信息' };
+  }
+
+  // 【v1.7.2】与 end 同一道闸，而且是更关键的一道：
+  //   删除会连帖子带 post_contacts 一起销毁，被举报的内容一旦删掉，后台审核卡片就只剩「信息不存在」，
+  //   举报证据和 warningCount 依据全丢。所以审查中一律拒绝，任何字段都不写。
+  const status = String(post.status || '');
+  if (status === 'auditing') {
+    console.warn('[post][delete] 审核中拦截 postId=' + postId + ' openid=' + openid);
+    return { ok: false, code: 'POST_AUDITING', message: '该信息正在审核中，无法自行操作' };
+  }
+  // 只有 active（进行中）才允许删除：draft / ended / deleted / 未知状态一律不放行
+  if (status !== 'active') {
+    console.warn('[post][delete] 状态不可删除拦截 status=' + (status || '(空)') + ' postId=' + postId + ' openid=' + openid);
+    return { ok: false, code: 'POST_NOT_ACTIVE', message: '该信息当前不可删除，请刷新后重试' };
   }
 
   try {

@@ -366,13 +366,15 @@ Page({
 
     // 2. 审查中（被举报打码 / 机审待复核）：作者本人放行，其他人拦截
     //    口径「四、帖子状态机」：发布者可以进入详情查看；其他用户点击时被拦截
+    //    【v1.7.2】作者进来后底部【结束】按钮置灰显示「审核中无法操作」，
+    //    真正的拦截在云函数 post（POST_AUDITING），前端只是不给他可点的入口。
     //    放在登录/资料校验之前，否则未登录用户只会看到「请先登录」，反而不知道内容有问题
     if (status === 'auditing') {
       const myOpenid = store.getOpenId();
       const isAuthor = !!myOpenid && !!authorOpenid && authorOpenid === myOpenid;
       if (!isAuthor) {
         wx.showToast({
-          title: AUDITING_BLOCK_MESSAGE, // '该内容涉嫌违规，正在审查中'
+          title: AUDITING_BLOCK_MESSAGE, // '该帖子正在审核中，请稍后再试'
           icon: 'none',
           duration: 1800
         });

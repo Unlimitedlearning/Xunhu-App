@@ -446,6 +446,11 @@ page {
   background-color: #f0f0f0 !important;
   color: #bbbbbb !important;
 }
+/* 审核中（v1.7.2）：作者的主按钮同样置灰，与「已结束」用同一套灰，靠文字说明原因 */
+.btn-auditing {
+  background-color: #f0f0f0 !important;
+  color: #bbbbbb !important;
+}
 .action-btn[disabled] {
   background-color: #f0f0f0 !important;
   color: #bbbbbb !important;

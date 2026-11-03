@@ -44,6 +44,8 @@ Page({
     statusText: '',
     statusKey: '',
     isOwner: false,
+    // 【v1.7.2】审核中：作者本人可以进来查看，但结束 / 删除都被云端拦死
+    isAuditing: false,
     hasApplied: false,
     isEnded: false,
     appliedStatus: '',
@@ -108,8 +110,10 @@ Page({
     // 发帖人视角：authorOpenid 是我
     const isOwner = !!openid && post.authorOpenid === openid;
 
-    // 【审查拦截】status === 'auditing'（被举报打码 / 待复核）：普通用户与发帖人本人都不可进入；
-    // 唯一例外是管理员预览（?admin=1）：先向云端重拉资料，确认 role === 'admin' 才放行。
+    // 【审查拦截】status === 'auditing'（被举报打码 / 待复核）：其他用户不可进入；
+    // 作者本人放行（与大厅 goToDetail 的口径一致）——他能看，但改不了状态：
+    // 底部【结束】按钮置灰为「审核中无法操作」，云函数 post 还会再拦一道（POST_AUDITING）。
+    // 管理员预览（?admin=1）：先向云端重拉资料，确认 role === 'admin' 才放行。
     // 注意：posts 本来对所有用户可读，拦截只是产品体验层；这里多一道 role 校验，是为了不让
     // 「改包加个 admin=1」就能把审查中的内容当正常帖子看。
     let adminPreview = false;
@@ -122,7 +126,7 @@ Page({
       adminPreview = store.isAdmin();
     }
 
-    if (post.status === 'auditing' && !adminPreview) {
+    if (post.status === 'auditing' && !adminPreview && !isOwner) {
       wx.showToast({ title: AUDITING_BLOCK_MESSAGE, icon: 'none', duration: 1500 });
       backToHall(1500);
       return;
@@ -164,6 +168,7 @@ Page({
       isOwner: isOwner,
       hasApplied: hasApplied,
       isEnded: post.status === 'ended',
+      isAuditing: post.status === 'auditing',
       appliedStatus: appliedStatus,
       appliedText: appliedText,
       adminPreview: adminPreview,
@@ -289,6 +294,12 @@ Page({
   // 底部主按钮统一入口
   onActionClick: function () {
     if (this.data.isOwner) {
+      // 【v1.7.2】审核中：主按钮已置灰，这里再兜一道（防旧页面缓存 / 误触），
+      // 审核中的帖子不能处理申请（它还在管理员后台的审核队列里）
+      if (this.data.isAuditing) {
+        wx.showToast({ title: AUDITING_BLOCK_MESSAGE, icon: 'none', duration: 1500 });
+        return;
+      }
       // 发帖人：去任务页管理申请（task 是 TabBar 页，必须用 switchTab）
       wx.switchTab({
         url: '/pages/task/task'
@@ -487,6 +498,12 @@ Page({
     const post = this.data.post;
     if (!post) return;
     if (post.status === 'ended') return; // 兜底：已结束不再弹确认框
+    // 【v1.7.2】审核中：按钮已经置灰，这里再兜一道（防误触 / 旧页面缓存），
+    // 真正拦截在云函数 post（auditing 直接回 POST_AUDITING，不写任何字段）
+    if (post.status === 'auditing') {
+      wx.showToast({ title: AUDITING_BLOCK_MESSAGE, icon: 'none', duration: 1500 });
+      return;
+    }
 
     const that = this;
     wx.showModal({

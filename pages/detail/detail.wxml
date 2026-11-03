@@ -109,14 +109,20 @@
 
 <!-- 底部操作区：举报（次要） + 主按钮（管理员预览时整条隐藏，禁止在预览页报名/举报） -->
 <view class="action-bar" wx:if="{{post && !notFound && !adminPreview && !needLogin}}">
-  <!-- 左侧小字按钮：发帖人 -> 结束（已结束则置灰不可点）；其他人 -> 举报 -->
+  <!-- 左侧小字按钮：发帖人 -> 结束（已结束 / 审核中都置灰不可点）；其他人 -> 举报 -->
   <block wx:if="{{isOwner}}">
     <text class="report-btn report-btn-disabled" wx:if="{{isEnded}}">已结束</text>
+    <!-- v1.7.2：审核中不给作者自助结束 / 删除（否则「发违规 -> 进审核 -> 自己删掉」就能销毁证据） -->
+    <text class="report-btn report-btn-disabled" wx:elif="{{isAuditing}}">审核中无法操作</text>
     <text class="report-btn report-btn-owner" wx:else catchtap="onEndClick">结束</text>
   </block>
   <text class="report-btn" wx:else catchtap="onReportClick">举报</text>
 
-  <button wx:if="{{isOwner}}" class="action-btn btn-owner" bindtap="onActionClick">管理申请</button>
+  <!-- 主按钮：发帖人 -> 管理申请（v1.7.2 审核中置灰，与左下角“审核中无法操作”逻辑一致） -->
+  <block wx:if="{{isOwner}}">
+    <button wx:if="{{isAuditing}}" class="action-btn btn-auditing" disabled="true">审核中无法处理</button>
+    <button wx:else class="action-btn btn-owner" bindtap="onActionClick">管理申请</button>
+  </block>
   <button wx:elif="{{isEnded}}" class="action-btn btn-ended" disabled="true">已结束</button>
   <button wx:elif="{{hasApplied}}" class="action-btn btn-applied" bindtap="onActionClick">{{appliedText}}</button>
   <button wx:else class="action-btn btn-apply" bindtap="onActionClick">申请加入</button>

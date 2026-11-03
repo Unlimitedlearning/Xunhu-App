@@ -342,7 +342,7 @@ Page({
       return;
     }
     if (!STUDENT_ID_REGEX.test(studentId)) {
-      wx.showToast({ title: '请输入正确的广工 10 位学号', icon: 'none' });
+      wx.showToast({ title: '请输入正确的广工学号', icon: 'none' });
       return;
     }
 

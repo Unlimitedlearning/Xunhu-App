@@ -65,7 +65,7 @@
       <input class="text-input {{isStudentIdBound ? 'text-input-locked' : ''}}"
              type="number"
              disabled="{{isStudentIdBound}}"
-             placeholder="广工 10 位学号（31 开头）"
+             placeholder="广工学号"
              maxlength="10"
              value="{{studentId}}"
              bindinput="onStudentIdInput" />

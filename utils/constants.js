@@ -361,7 +361,7 @@ const ANNOUNCEMENT_LIST_LIMIT = 3; // 公告永远置顶，只取最新 3 条
 const ANNOUNCEMENT_ICON = '📢';    // 公告标题前的图标（唯一来源，页面不写死）
 const MESSAGE_EMPTY_TEXT = '暂无通知';
 const ANNOUNCEMENT_TITLE_MAX = 30;  // 公告标题上限（后台发布前后端同值校验）
-const ANNOUNCEMENT_CONTENT_MAX = 200; // 公告正文上限
+const ANNOUNCEMENT_CONTENT_MAX = 600; // 公告正文上限
 
 /* ---------------- 一次性订阅消息（v1.5.0） ----------------
  * 模板 ID 到「微信公众平台 → 功能 → 订阅消息 → 我的模板」申请后填到下面两个变量；

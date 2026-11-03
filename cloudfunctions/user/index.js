@@ -538,7 +538,7 @@ exports.main = async (event) => {
       return {
         ok: false,
         code: 'STUDENT_ID_INVALID',
-        message: '学号格式不合法，拒绝保存（请输入广工 10 位学号，以 31 开头）'
+        message: '学号格式不合法，拒绝保存（请输入广工学号）'
       };
     }
 

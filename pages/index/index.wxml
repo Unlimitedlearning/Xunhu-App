@@ -107,7 +107,7 @@
 <view class="guide-mask" wx:if="{{showGuide}}" catchtouchmove="noop">
   <view class="guide-card">
     <view class="guide-title">欢迎来到寻呼校园 👋</view>
-    <view class="guide-intro">这里不是普通微信群 —— 学号校验、互评信用、隐私保护，一个都不少</view>
+    <view class="guide-intro">广工同学聚集地，集中力量办大事！</view>
 
     <view class="guide-item" wx:for="{{guidePoints}}" wx:for-item="point" wx:key="title">
       <text class="guide-emoji">{{point.emoji}}</text>

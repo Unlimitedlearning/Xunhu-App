@@ -17,7 +17,7 @@
   <scroll-view class="scrollarea" scroll-y wx:if="{{activeTab === 'audit'}}">
     <view class="container">
 
-      <view class="hint">首帖、有违规记录、被用户举报的帖子都会进这里，不处理就一直停在「审核中」，大厅看不到。卡片顶部的标签说明进审原因；点标题可预览全文，再决定通过还是下架——下架必须选一个原因，系统会通知作者。</view>
+      <view class="hint">首帖、有违规记录、被用户举报的帖子都会进这里。其中「被举报但不足 5 人」的帖子仍在正常展示，卡片上会标「尚未达到下架阈值」，主按钮为【忽略举报】（只清理举报记录，帖子不下架、不通知作者）；审核中的帖子主按钮为【通过】。点标题可预览全文，下架必须选一个原因，系统会通知作者。</view>
 
       <view class="loading-text" wx:if="{{auditLoading && !auditLoaded}}">正在加载审核队列…</view>
 
@@ -26,6 +26,10 @@
       <view class="empty-card" wx:if="{{auditLoaded && !auditError && auditPosts.length === 0}}">
         <view class="empty-emoji">🎉</view>
         <view class="empty-text">审核队列已清空</view>
+      </view>
+
+      <view class="more-hint" wx:if="{{auditLoaded && !auditError && auditHasMore}}">
+        仅显示最新 {{auditPosts.length}} 条（队列共 {{auditPendingTotal}} 条）。处理完下拉刷新即可看下一批。
       </view>
 
       <view class="report-card" wx:for="{{auditPosts}}" wx:key="postId">
@@ -85,7 +89,8 @@
                 data-post-id="{{item.postId}}"
                 data-report-id="{{item.reportId}}"
                 data-title="{{item.title}}"
-                bindtap="onAuditApproveTap">通过</view>
+                data-is-auditing="{{item.isAuditing}}"
+                bindtap="onAuditApproveTap">{{item.approveText}}</view>
           <view class="btn btn-danger {{auditWorkingId ? 'btn-disabled' : ''}}"
                 hover-class="btn-hover"
                 data-post-id="{{item.postId}}"

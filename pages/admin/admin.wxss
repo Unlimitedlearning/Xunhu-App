@@ -297,6 +297,25 @@ page {
   background-color: #e6f0ff;
 }
 
+/* v1.7.1：被举报但未达下架阈值的线上帖（橙色描边，与「已下架审中」的红标签区分） */
+.tag-pending {
+  color: #b26a00;
+  background-color: #fff4e0;
+  border: 1rpx solid #f57c00;
+}
+
+/* 分页提示：队列超过一页时告知「只显示了最新的 N 条」 */
+.more-hint {
+  margin: 0 0 20rpx;
+  padding: 16rpx 20rpx;
+  border-radius: 12rpx;
+  background-color: #f7f8fa;
+  color: #8A8A8A;
+  font-size: 24rpx;
+  line-height: 1.5;
+  text-align: center;
+}
+
 .tag-other {
   color: #8A8A8A;
   background-color: #f2f3f5;

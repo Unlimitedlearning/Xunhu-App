@@ -407,7 +407,7 @@ exports.main = async (event) => {
     return { ok: false, code: 'PROFILE_NOT_READY', message: '请先在「我的」页面选择所在校区后再发布' };
   }
   if (!STUDENT_ID_REGEX.test(String(profile.studentId || '').trim())) {
-    return { ok: false, code: 'PROFILE_NOT_READY', message: '请先在「我的」页面绑定广工 10 位学号后再发布' };
+    return { ok: false, code: 'PROFILE_NOT_READY', message: '请先在「我的」页面绑定广工学号后再发布' };
   }
 
   const authorName = String(profile.nickname).trim();

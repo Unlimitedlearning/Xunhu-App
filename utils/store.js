@@ -910,7 +910,7 @@ async function saveProfile(profile) {
 
   // 前端先拦一道（云函数里还有同样的一道，防绕过）
   if (!constants.STUDENT_ID_REGEX.test(input.studentId)) {
-    const err = new Error('请输入正确的广工 10 位学号');
+    const err = new Error('请输入正确的广工学号');
     err.code = 'STUDENT_ID_INVALID';
     throw err;
   }
@@ -1049,8 +1049,9 @@ function hasReviewedPost(postId, revieweeOpenid) {
 
 function mergeMyReview(review) {
   if (!review) return;
+  // 全局唯一键：一个人对我（我发出的评价）只有一条 —— 换帖子重评是「覆盖」，不是新增
   const index = cache.myReviews.findIndex(function (item) {
-    return item.postId === review.postId && item.revieweeOpenid === review.revieweeOpenid;
+    return item.revieweeOpenid === review.revieweeOpenid;
   });
   if (index > -1) {
     cache.myReviews[index] = review;
@@ -1087,9 +1088,9 @@ async function fetchMyReviewByPost(postId, revieweeOpenid) {
   });
   const review = result.review ? normalizeReview(result.review) : null;
 
-  // 云端说没有 -> 清掉缓存里这条「帖子 + 这个人」的旧记录；有 -> 合并进缓存
+  // 云端说没有 -> 清掉缓存里对这个人的旧记录；有 -> 合并进缓存（按人合并：评价全局一人一条）
   const index = cache.myReviews.findIndex(function (item) {
-    return item.postId === postId && item.revieweeOpenid === revieweeOpenid;
+    return item.revieweeOpenid === revieweeOpenid;
   });
   if (review) {
     mergeMyReview(review);
@@ -1100,8 +1101,8 @@ async function fetchMyReviewByPost(postId, revieweeOpenid) {
 }
 
 /**
- * 提交评价（云端查重后只 add，提交后不可修改）
- * 重复提交时云端回 `ALREADY_REVIEWED`，store 把它原样抛给页面展示
+ * 提交评价（v1.7.1：全局一人一条 —— 首次新增，已有则云端 update 覆盖）
+ * 覆盖时云端回 `created:false, updated:true`，本函数照常把它合并进缓存并返回
  * @param {{postId:string, revieweeOpenid:string, rating:number, content:string}} input
  */
 async function submitReview(input) {
@@ -1134,7 +1135,7 @@ async function submitReview(input) {
   const review = normalizeReview(result.review);
   if (review) mergeMyReview(review);
 
-  return { review: review, created: !!result.created };
+  return { review: review, created: !!result.created, updated: !!result.updated };
 }
 
 async function pullReceivedReviews() {
@@ -1465,15 +1466,27 @@ async function callAdminFunction(data) {
   return result;
 }
 
-/* 内容审核队列（v1.7.0 统一审核流）：posts.status === 'auditing' 的帖子。
-   旧的 fetchAdminReports（举报审查 Tab）与 fetchAdminAuditingPosts（内容审核 Tab）已合并：
-   后台只保留一张待办清单，举报次数变成卡片上的一个标签（auditReason）。*/
-async function fetchAdminAuditQueue() {
+/* 内容审核队列（v1.7.1）：两类待办合并 + 分页。
+   ① posts.status === 'auditing'（首帖 / 有违规记录 / 举报满 5 人）；
+   ② 还有 pending 举报、但帖子仍是 active / ended 的（不足 5 人举报，v1.7.1 新收进队列）。
+   云端默认每次只回最新 20 条（pageSize 最大 50），返回 hasMore / pendingTotal 供页面提示。*/
+async function fetchAdminAuditQueue(options) {
+  const input = options || {};
+  const payload = { action: 'getAuditQueue' };
+  if (input.page) payload.page = Number(input.page) || 0;
+  if (input.pageSize) payload.pageSize = Number(input.pageSize) || 0;
+
   await ensureInit();
-  const result = await callAdminFunction({ action: 'getAuditQueue' });
+  const result = await callAdminFunction(payload);
   return {
     total: Number(result.total) || 0,
-    list: Array.isArray(result.list) ? result.list : []
+    list: Array.isArray(result.list) ? result.list : [],
+    page: Number(result.page) || 0,
+    pageSize: Number(result.pageSize) || 20,
+    hasMore: !!result.hasMore,
+    pendingTotal: Number(result.pendingTotal) || 0,
+    auditingCount: Number(result.auditingCount) || 0,
+    reportedCount: Number(result.reportedCount) || 0
   };
 }
 
@@ -1560,8 +1573,9 @@ async function adminRejectPost(postId, reportId, reason) {
 /**
  * 给目标用户记一次违规警告（满 WARNING_BAN_THRESHOLD 次自动 banned）
  * @param {string} targetOpenid
+ * @param {string} reason 处罚原因（v1.7.1 必填：写进 admin_logs + 站内通知告知原因）
  */
-async function adminAddWarning(targetOpenid) {
+async function adminAddWarning(targetOpenid, reason) {
   const openid = String(targetOpenid || '').trim();
   if (!openid) {
     const err = new Error('缺少目标用户');
@@ -1569,14 +1583,21 @@ async function adminAddWarning(targetOpenid) {
     throw err;
   }
 
+  const reasonText = String(reason || '').trim();
+  if (!reasonText) {
+    const err = new Error('请先选择处罚原因');
+    err.code = 'REASON_REQUIRED';
+    throw err;
+  }
+
   await ensureInit();
-  return callAdminFunction({ action: 'addWarning', targetOpenid: openid });
+  return callAdminFunction({ action: 'addWarning', targetOpenid: openid, reason: reasonText });
 }
 
 /**
  * 封禁账号：role = 'banned' + 写 blacklist（只记 openid + 原因）
  * @param {string} targetOpenid
- * @param {string} reason 封禁原因（写入黑名单与站内通知）
+ * @param {string} reason 封禁原因（v1.7.1 必填：写进 admin_logs / blacklist，并写入站内通知）
  */
 async function adminBanUser(targetOpenid, reason) {
   const openid = String(targetOpenid || '').trim();
@@ -1586,11 +1607,18 @@ async function adminBanUser(targetOpenid, reason) {
     throw err;
   }
 
+  const reasonText = String(reason || '').trim();
+  if (!reasonText) {
+    const err = new Error('请先选择封禁原因');
+    err.code = 'REASON_REQUIRED';
+    throw err;
+  }
+
   await ensureInit();
   return callAdminFunction({
     action: 'banUser',
     targetOpenid: openid,
-    reason: String(reason || '').trim()
+    reason: reasonText
   });
 }
 

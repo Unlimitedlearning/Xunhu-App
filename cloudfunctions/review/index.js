@@ -2,8 +2,9 @@
 // 双向评价（防互刷）：reviews 集合的唯一读写入口。
 //
 // 为什么全部放服务端：
-//   1) 「同一次合作（postId + 被评价人）一个人只能评价一次」必须由服务端做查重，客户端改包就能绕过；
-//      提交后不可修改 —— 写入只有 add，没有 update；
+//   1) 【v1.7.1 防刷改回全局唯一】A 对 B **永远只能有一条评价记录**，唯一键 = reviewerOpenid + revieweeOpenid；
+//      唯一键里刻意不含 postId：之前是 postId + 评价人 + 被评价人，结果两人多次合作就能重复刷评价 / 刷好评率。
+//      现在第二次提交走 update 覆盖（rating / content / createTime / postId 全部刷新），评价总量不增长。
 //   2) 关系校验要联查 applications（accepted）+ posts（ended），客户端没有读别人申请的权限；
 //   3) reviews 权限设「所有用户不可读写」后，评价人 openid 不会外泄，匿名展示才真匿名。
 //
@@ -12,7 +13,8 @@
 //   改 utils/constants.js 的词库时要同步 cloudfunctions/publish 与本文件。
 //
 // 集合字段：reviewId / postId / reviewerOpenid / revieweeOpenid / rating(1满意,0不满意) / content /
-//           contextSnapshot（合作上下文快照，如「【组队-挑战杯电梯卫士】」） / createTime
+//           contextSnapshot（合作上下文快照，如「【组队-挑战杯电梯卫士】」） / createTime / updateTime（覆盖过才有）
+//           reviewId = 评价人_openid + '_' + 被评价人 openid（全局唯一，不含 postId）
 //
 // 【contextSnapshot 为什么在服务端生成】
 //   1) 评价人与被评价人之外的第三方（后来的浏览者）也需要知道「这条好评是针对哪个项目的」；
@@ -21,9 +23,9 @@
 //   前端不做二次拼接：有快照就展示，没有（老数据）就只展示评价原文。
 //
 // 调用方式（小程序端 store.*）：
-//   { action: 'submit', postId, revieweeOpenid, rating, content }  -> { ok, created, review }
-//                                                                    已评价过 -> { ok:false, code:'ALREADY_REVIEWED' }
-//   { action: 'get', postId?, revieweeOpenid? }                    -> { ok, review | null }   查重（按 postId 或按人）
+//   { action: 'submit', postId, revieweeOpenid, rating, content }  -> { ok, created, updated, review }
+//                                                                    首次 = created:true；已评价过 = update 覆盖，created:false, updated:true
+//   { action: 'get', postId?, revieweeOpenid? }                    -> { ok, review | null }   查重（给了 revieweeOpenid 就按人查，postId 只作兜底）
 //   { action: 'mine' }                                             -> { ok, list }            我发出的全部评价（任务页标记「已评价」）
 //   { action: 'received' }                                         -> { ok, total, goodCount, rate, list }  我收到的评价（个人页，匿名）
 
@@ -43,9 +45,6 @@ const BANNED_MESSAGE = '您的账号因违规已被限制使用';
 const MAX_CONTENT = 50;
 const LIST_LIMIT = 100; // 我发出的评价一次最多回传 100 条（任务页只用来做「是否已评价」标记）
 const RECEIVED_LIMIT = 20; // 个人页展示的评价条数
-
-// 已评价过的统一文案（与小程序端 constants.ALREADY_REVIEWED_MESSAGE 同值）
-const ALREADY_REVIEWED_MESSAGE = '您已经评价过本次合作了';
 
 /* ---------------- 合作上下文快照（contextSnapshot） ---------------- */
 
@@ -271,7 +270,7 @@ async function findAcceptedApplication(db, postId, a, b) {
   return rows.length ? rows[0] : null;
 }
 
-/* ---------------- 写入：查重后只 add（提交后不可修改） ---------------- */
+/* ---------------- 写入：全局唯一键（A 对 B 只有一条），已存在则 update 覆盖 ---------------- */
 
 async function handleSubmit(db, openid, payload) {
   const postId = String(payload.postId || '').trim();
@@ -340,11 +339,79 @@ async function handleSubmit(db, openid, payload) {
     return { ok: false, code: 'POST_NOT_ENDED', message: '该信息还未结束，结束后才能评价' };
   }
 
-  // reviewId 用「评价人_帖子_被评价人」拼出来：一场合作一条，天然唯一
-  const reviewId = openid + '_' + postId + '_' + revieweeOpenid;
+  // reviewId 换成「评价人 + 被评价人」的全局唯一形式（不含 postId）：
+  //   A 对 B 永远只有一条评价记录，两人多次合作也不会多出一条（防刷好评 / 刷不满意）。
+  const reviewId = openid + '_' + revieweeOpenid;
   const createTime = Date.now();
   // 合作上下文快照：用上面已经查出来的 post（category + title），不额外多一次读
   const contextSnapshot = buildContextSnapshot(post);
+
+  // 3. 核心拦截（写入前查重，全局唯一键）：reviewerOpenid === A 且 revieweeOpenid === B
+  //    postId 不参与查重：即使换了一条帖子来评，命中的也是同一条记录（走 update 覆盖）。
+  //    查重与写入之间的并发窗口由前端按钮锁定 + 提交中禁点缩减。
+  let existedDoc = null;
+  try {
+    const existed = await db.collection(REVIEWS)
+      .where({ reviewerOpenid: openid, revieweeOpenid: revieweeOpenid })
+      .limit(1)
+      .get();
+    existedDoc = (((existed && existed.data) || [])[0]) || null;
+  } catch (err) {
+    if (!isMissingCollection(err)) {
+      return {
+        ok: false,
+        code: errCodeOf(err) || 'REVIEW_QUERY_FAILED',
+        message: '评价状态校验失败，请稍后重试'
+      };
+    }
+    // 集合还没建 = 还没人评价过，继续往下走（add 时会自动建集合）
+  }
+
+  // 4. 已存在 -> update 覆盖原有评价（绝不新增第二条）
+  if (existedDoc && existedDoc._id) {
+    const updateData = {
+      rating: rating,
+      content: content,
+      createTime: createTime,
+      postId: postId,
+      // 快照必须跟着 postId 一起换：否则会拿旧项目的上下文去描述新评价
+      contextSnapshot: contextSnapshot,
+      // 历史数据可能是「A_帖子_B」的老格式：顺手归一成新的全局唯一形式
+      reviewId: reviewId,
+      updateTime: createTime
+    };
+
+    try {
+      await db.collection(REVIEWS).doc(existedDoc._id).update({ data: updateData });
+    } catch (err) {
+      return {
+        ok: false,
+        code: errCodeOf(err) || 'REVIEW_UPDATE_FAILED',
+        message: '评价更新失败，请稍后重试'
+      };
+    }
+
+    console.log('[review] 覆盖旧评价 reviewId=' + reviewId +
+      ' oldPostId=' + String(existedDoc.postId || '') + ' newPostId=' + postId);
+
+    return {
+      ok: true,
+      created: false, // 不是新增：只是把已有那条刷新了
+      updated: true,
+      review: {
+        reviewId: reviewId,
+        postId: postId,
+        reviewerOpenid: openid,
+        revieweeOpenid: revieweeOpenid,
+        rating: rating,
+        content: content,
+        contextSnapshot: contextSnapshot,
+        createTime: createTime
+      }
+    };
+  }
+
+  // 5. 首次评价 -> add
   const newDoc = {
     _openid: openid, // 归属：便于按评价人追溯（权限已锁死，前端读不到）
     reviewId: reviewId,
@@ -356,31 +423,6 @@ async function handleSubmit(db, openid, payload) {
     contextSnapshot: contextSnapshot,
     createTime: createTime
   };
-
-  // 3. 核心拦截（写入前查重，绝对拦截）：
-  //    同一帖子里「我对同一个人」只能评一次（一个帖子可能招多个队友，B 和 C 要能分别评）：
-  //    postId + reviewerOpenid + revieweeOpenid 三者全相同才算重复，提交后不可修改。
-  //    查重与 add 之间的并发窗口由前端按钮锁定 + 提交中禁点缩减，重复提交会被这里挡下。
-  try {
-    const existed = await db.collection(REVIEWS)
-      .where({ postId: postId, reviewerOpenid: openid, revieweeOpenid: revieweeOpenid })
-      .limit(1)
-      .get();
-    if (((existed && existed.data) || []).length) {
-      console.log('[review] 重复评价已拦截 postId=' + postId +
-        ' reviewer=' + openid + ' reviewee=' + revieweeOpenid);
-      return { ok: false, code: 'ALREADY_REVIEWED', message: ALREADY_REVIEWED_MESSAGE };
-    }
-  } catch (err) {
-    if (!isMissingCollection(err)) {
-      return {
-        ok: false,
-        code: errCodeOf(err) || 'REVIEW_QUERY_FAILED',
-        message: '评价状态校验失败，请稍后重试'
-      };
-    }
-    // 集合还没建 = 还没人评价过，继续往下走（add 时会自动建集合）
-  }
 
   try {
     await db.collection(REVIEWS).add({ data: newDoc });
@@ -408,7 +450,8 @@ async function handleSubmit(db, openid, payload) {
 
   return {
     ok: true,
-    created: true, // 只可能是新增：没有「更新评价」这条路径
+    created: true, // 首次评价
+    updated: false,
     review: {
       reviewId: reviewId,
       postId: postId,
@@ -428,14 +471,18 @@ async function handleGet(db, openid, payload) {
   const postId = String(payload.postId || '').trim();
   const revieweeOpenid = String(payload.revieweeOpenid || '').trim();
 
-  // 查重主键是 postId（同一次合作只能评一次），revieweeOpenid 只作为可选的附加条件
+  // 全局唯一键是「评价人 + 被评价人」：给了 revieweeOpenid 就按人查（postId 不再参与查重，
+  // 否则换了帖子重评后，前端按旧 postId 查会错误地判定「没评过」）
   if (!postId && !revieweeOpenid) {
     return { ok: false, code: 'REVIEWEE_REQUIRED', message: '缺少评价对象' };
   }
 
   const where = { reviewerOpenid: openid };
-  if (postId) where.postId = postId;
-  if (revieweeOpenid) where.revieweeOpenid = revieweeOpenid;
+  if (revieweeOpenid) {
+    where.revieweeOpenid = revieweeOpenid;
+  } else if (postId) {
+    where.postId = postId;
+  }
 
   try {
     const res = await db.collection(REVIEWS)

@@ -9,13 +9,16 @@
 //   注意：role 只能由控制台或本云函数之外的服务端逻辑写入，客户端改包也提不了权。
 //
 // 入参统一用 action 区分（v1.7.0 合并后只有三个审核类动作 + 三个用户/公告动作）：
-//   { action: 'getAuditQueue' }                        -> { ok, total, list } 内容审核待办队列
+//   { action: 'getAuditQueue', page?, pageSize? }       -> { ok, total, page, pageSize, hasMore, list }
+//                                                         待办队列（分页，默认每次只拉最新 20 条）
 //   { action: 'approve', postId, reportId? }           -> status = 'active'；该帖所有 pending 举报置 resolved；通知作者
+//                                                         【v1.7.1】帖子本来就是 active（被举报但没到下架阈值）时 =
+//                                                         「忽略举报」：不碰帖子状态、不通知作者，只把举报置 resolved
 //   { action: 'reject', postId, reportId?, reason? }   -> status = 'deleted'；发帖人 warningCount +1（满 3 自动 banned）；
 //                                                         该帖所有 pending 举报置 resolved；通知作者（原因 + 警告次数）
 //   { action: 'searchUser', studentId }                -> { ok, total, list }  按学号查绑定者
-//   { action: 'addWarning', targetOpenid }             -> 目标用户 warningCount +1（满 3 次自动 banned）
-//   { action: 'banUser', targetOpenid, reason }        -> role = 'banned' + 写 blacklist
+//   { action: 'addWarning', targetOpenid, reason }     -> 目标用户 warningCount +1（满 3 次自动 banned）；reason 必填
+//   { action: 'banUser', targetOpenid, reason }        -> role = 'banned' + 写 blacklist；reason 必填
 //   { action: 'unbind', targetOpenid }                 -> 把目标用户 studentId 置空（申诉处理）
 //   { action: 'publishAnnouncement', title, content }  -> 发布全体公告（写 announcements）
 //
@@ -26,6 +29,12 @@
 //
 //   approve / reject / addWarning / banUser / unbind / publishAnnouncement 都会写 admin_logs
 //   （adminOpenid / action / targetId / createTime + 业务留痕字段）。
+//
+// 【v1.7.1 修复（内测反馈）】
+//   1) 队列不只收 status === 'auditing'：pending 举报关联的帖子（哪怕还是 active）也进队列，
+//      否则「前 4 个举报」永远看不到、永远没人处理（满 5 个才进审）；
+//   2) getAuditQueue 分页：默认每次只拉最新 20 条（AUDIT_PAGE_SIZE），批量查 users 只取昵称/校区/警告次数；
+//   3) 记警告 / 封禁必须带 reason：写 admin_logs + 站内通知里明确告知原因（合规追溯）。
 //
 // 【站内通知】approve / reject / addWarning / banUser / unbind 执行成功后，会向被处置人投递一条 messages 系统通知
 //   （归属字段 = 目标用户；messages 集合客户端零权限，只有他本人的消息中心能看到）。
@@ -49,7 +58,7 @@ const BLACKLIST = 'blacklist';
 
 // 公告长度上限 / 通知类型（与小程序端 constants 同值）
 const ANNOUNCEMENT_TITLE_MAX = 30;
-const ANNOUNCEMENT_CONTENT_MAX = 200;
+const ANNOUNCEMENT_CONTENT_MAX = 600;
 const MESSAGE_TYPE_SYSTEM = 'system';
 // 对外联系邮箱（口径「十、违规处置」：处罚通知必须给出真实邮箱）
 const ADMIN_CONTACT_EMAIL = 'xunhu_app@qq.com';
@@ -58,8 +67,16 @@ const ADMIN_CONTACT_EMAIL = 'xunhu_app@qq.com';
 const REPORT_WEIGHT_AUDIT_THRESHOLD = 5;
 const WARNING_BAN_THRESHOLD = 3;
 
-// 审核队列一次最多回多少条（首帖 / 有前科 / 被举报的帖子都会落在这里，处理完再刷新）
-const AUDIT_LIST_LIMIT = 100;
+// 审核队列分页：管理后台是在手机上操作，一次拉 100 条又慢又没人往下翻 —— 默认只拉最新 20 条。
+// 处理完刷新就自然看到下一批（被处理的帖子会离开队列）。
+const AUDIT_PAGE_SIZE = 20;
+const AUDIT_PAGE_MAX = 50; // 前端显式传 pageSize 时的上限（防止一次拉回整张表）
+// 两个数据源单次最多扫描多少条：auditing 帖子 / 未处理举报（防止全表拉取拖垮云函数）
+const AUDIT_SCAN_LIMIT = 100;
+const PENDING_REPORT_SCAN_LIMIT = 200;
+// 被举报的线上帖：最多取最近举报的 40 个帖子（=2 页），批量 _.in 最多 4 次往返，
+// 再多就只是在页外干扰排序，性价比很低。
+const REPORTED_POST_FETCH_LIMIT = 40;
 const SEARCH_LIMIT = 20;
 // 批量联查的批大小：_.in 每批最多放 10 个 id，单批结果上限 1000 条。
 // 审核队列要求「拿到帖子列表后批量查 reports 与 users，严禁在 map 循环里单条查库」，
@@ -144,6 +161,83 @@ async function getPost(db, postId) {
  *   100 条待审帖 × 2 次查询 = 200 次数据库往返，云函数 3 秒超时直接就挂了。
  *   这里的做法：按 BATCH_SIZE 个 id 一批发 _.in 查询，回来后在内存里按 key 分组。*/
 
+/**
+ * 拉全部「未处理」举报的原始文档（v1.7.1）：不分帖子，只要还没结案就算
+ *   · status === 'pending'：v1.6.0 起的正常写法；
+ *   · status 字段不存在：v1.6.0 之前的老数据，按 pending 算（与 isPendingReport 同口径）。
+ * 两个查询并发；老数据那条查不到（字段全有）也不影响主流程。
+ * @return {Promise<Array>} 举报文档数组（已按 _id 去重）
+ */
+async function loadPendingReportDocs(db) {
+  const _ = db.command;
+  const tasks = [
+    db.collection(REPORTS)
+      .where({ status: 'pending' })
+      .orderBy('createTime', 'desc')
+      .limit(PENDING_REPORT_SCAN_LIMIT)
+      .get(),
+    db.collection(REPORTS)
+      .where({ status: _.exists(false) })
+      .orderBy('createTime', 'desc')
+      .limit(PENDING_REPORT_SCAN_LIMIT)
+      .get()
+  ];
+
+  const results = await Promise.all(tasks.map(function (task) {
+    return task.catch(function (err) {
+      if (!isMissingCollection(err)) {
+        console.warn('[admin] 读取未处理举报失败，跳过：', err && err.message);
+      }
+      return null;
+    });
+  }));
+
+  const rows = [];
+  const seen = {};
+  results.forEach(function (res) {
+    ((res && res.data) || []).forEach(function (doc) {
+      if (!doc || !doc._id || seen[doc._id] || !isPendingReport(doc)) return;
+      seen[doc._id] = true;
+      rows.push(doc);
+    });
+  });
+
+  return rows;
+}
+
+// 按 _id 批量取帖子（用在「举报关联的帖子」这一步）：_.in 每批 BATCH_SIZE 个
+async function loadPostsByIds(db, postIds) {
+  const _ = db.command;
+  const map = {};
+  const unique = [];
+  const seen = {};
+
+  (postIds || []).forEach(function (id) {
+    if (!id || seen[id]) return;
+    seen[id] = true;
+    unique.push(id);
+  });
+
+  for (let i = 0; i < unique.length; i += BATCH_SIZE) {
+    const chunk = unique.slice(i, i + BATCH_SIZE);
+    try {
+      const res = await db.collection(POSTS)
+        .where({ _id: _.in(chunk) })
+        .limit(BATCH_FETCH_LIMIT)
+        .get();
+      ((res && res.data) || []).forEach(function (doc) {
+        if (doc && doc._id) map[doc._id] = doc;
+      });
+    } catch (err) {
+      if (!isMissingCollection(err)) {
+        console.warn('[admin] 批量读取帖子失败，跳过本批：', err && err.message);
+      }
+    }
+  }
+
+  return map;
+}
+
 // 一条举报是否还「待处理」：老记录没有 status 字段 -> 按 pending 处理；
 // 'done' 是 v1.6.0 之前的已处理状态，'resolved' 是 v1.7.0 统一后的已处理状态。
 function isPendingReport(doc) {
@@ -188,6 +282,13 @@ async function loadPendingReportsByPostIds(db, postIds) {
       }
     }
   }
+
+  // 每个帖子的举报按时间倒序：reports[0] 就是「最新一条举报」，卡片展示的举报理由才准确
+  Object.keys(map).forEach(function (key) {
+    map[key].sort(function (a, b) {
+      return (b.createTime || 0) - (a.createTime || 0);
+    });
+  });
 
   return map;
 }
@@ -439,13 +540,35 @@ function buildAuditTags(reportCount, warningCount, historyCount) {
   return tags;
 }
 
+/* 【v1.7.1】被举报、但还没达到自动下架阈值（5 人）的帖子：
+ * 这类帖子 status 仍是 active / ended，云上没人拦它，完全靠管理员在这里「忽略举报」或「下架」。
+ * 标签固定带一条「尚未达到下架阈值」，让管理员一眼看出「它不是审中帖，是被举报的线上帖」。*/
+function buildReportedTags(reportCount, warningCount) {
+  const tags = [];
+
+  if (reportCount > 0) {
+    tags.push({ type: 'report', text: '被举报(' + reportCount + '次)' });
+  }
+  // 即使 reportCount 异常为 0（并发删举报等脏数据），这条标签也要在：卡片靠它区分两种待办
+  tags.push({ type: 'pending', text: '尚未达到下架阈值' });
+  if (warningCount > 0) {
+    tags.push({ type: 'warning', text: '违规用户发布' });
+  }
+
+  return tags;
+}
+
 /* ---------------- action: approve（统一审核通过，替代旧 ignore / approvePost） ----------------
  * 【口径】通过 = 内容无违规：
  *   1) posts.status = 'active'（大厅立即展示）；
  *   2) 该帖名下所有「待处理」举报一并置 resolved（审核队列是唯一待办清单，不留尾巴）；
  *   3) 写 auditDismissed：人工已判定无违规，report 云函数再次触顶时只下架复查、不重复扣作者警告；
  *   4) 给作者发一条站内通知（不通知他会以为帖子凭空消失）。
- * reportId 可选：审核队列里的帖子可能根本没被举报（首帖审核），只传 postId 也能过。*/
+ * reportId 可选：审核队列里的帖子可能根本没被举报（首帖审核），只传 postId 也能过。
+ *
+ * 【v1.7.1 忽略举报】帖子本来就是 active / ended 时（被举报但没到下架阈值），
+ *   前端按钮叫【忽略举报】：只把这条帖子的 pending 举报置 resolved，
+ *   不碰帖子状态、不写 auditDismissed、也不给作者发通知（他压根不知道有举报，也没被下架）。*/
 async function handleApprove(db, adminOpenid, payload) {
   const postId = String(payload.postId || '').trim();
   const reportId = String(payload.reportId || '').trim();
@@ -457,6 +580,32 @@ async function handleApprove(db, adminOpenid, payload) {
   const post = await getPost(db, postId);
   if (!post) {
     return { ok: false, code: 'POST_NOT_FOUND', message: '帖子不存在或已被删除' };
+  }
+
+  const statusBefore = String(post.status || '');
+
+  // 【v1.7.1】非 auditing 的帖子 = 「忽略举报」：只清举报记录
+  if (statusBefore !== 'auditing') {
+    if (statusBefore === 'deleted') {
+      return { ok: false, code: 'ALREADY_REJECTED', message: '该内容已下架，无需处理举报' };
+    }
+
+    const resolved = await resolveReportsForPost(db, postId, reportId, 'ignore', adminOpenid);
+    const logged = await writeLog(db, adminOpenid, 'auditIgnoreReport', postId, {
+      postId: postId,
+      reportId: reportId,
+      postStatus: statusBefore,
+      resolvedReports: resolved.count
+    });
+
+    return {
+      ok: true,
+      postId: postId,
+      ignored: true,
+      status: statusBefore,
+      resolvedReports: resolved.count,
+      logged: logged
+    };
   }
 
   const now = Date.now();
@@ -504,6 +653,7 @@ async function handleApprove(db, adminOpenid, payload) {
   return {
     ok: true,
     postId: postId,
+    ignored: false,
     status: 'active',
     resolvedReports: resolved.count,
     notified: notified,
@@ -791,6 +941,8 @@ async function handlePublishAnnouncement(db, adminOpenid, payload) {
  */
 
 // 批量取用户文档（兼容 _openid / openid 两种历史写法），返回 { openid: doc }
+// 【v1.7.1 性能】只取审核卡片真正要用的字段（昵称 / 校区 / 警告次数 + 两个归属字段），
+//   不再全量拉 users 文档（一个用户的文档里还有简历、学号、联系方式等大字段）。
 async function loadUsersByOpenids(db, openids) {
   const _ = db.command;
   const map = {};
@@ -803,11 +955,20 @@ async function loadUsersByOpenids(db, openids) {
     unique.push(id);
   });
 
+  // 字段白名单：_openid / openid 用于分组解码，其余三个是卡片要展示的
+  const USER_FIELDS = {
+    _openid: true,
+    openid: true,
+    nickname: true,
+    campus: true,
+    warningCount: true
+  };
+
   for (let i = 0; i < unique.length; i += 20) {
     const chunk = unique.slice(i, i + 20);
     try {
-      const byOpenidField = await db.collection(USERS).where({ _openid: _.in(chunk) }).limit(20).get();
-      const byLegacyField = await db.collection(USERS).where({ openid: _.in(chunk) }).limit(20).get();
+      const byOpenidField = await db.collection(USERS).where({ _openid: _.in(chunk) }).field(USER_FIELDS).limit(20).get();
+      const byLegacyField = await db.collection(USERS).where({ openid: _.in(chunk) }).field(USER_FIELDS).limit(20).get();
       ((byOpenidField && byOpenidField.data) || []).concat((byLegacyField && byLegacyField.data) || [])
         .forEach(function (doc) {
           if (!doc) return;
@@ -824,26 +985,33 @@ async function loadUsersByOpenids(db, openids) {
   return map;
 }
 
-/* ---------------- action: getAuditQueue（唯一待办队列） ----------------
- * 流程：
- *   1) 一次查出所有 status = 'auditing' 的帖子（最新 100 条）；
- *   2) 拿帖子 id / 作者 id 去批量查 reports（举报次数）与 users（发帖人状态），
- *      三个批量查询并发；
- *   3) 再批量统计作者历史发帖数，拼出 auditReason（多条件命中用逗号连接）。
- * 【性能】全程只有 1 + 3×ceil(n/10) 次查询（n = 待审帖数），
- *   绝不在 map 循环里对每条帖子单独查 reports / users。*/
-async function handleGetAuditQueue(db) {
-  let rows = [];
+/* ---------------- action: getAuditQueue（唯一待办队列，v1.7.1 分页 + 包含被举报线上帖） ----------------
+ * 队列 = 两类待办合并：
+ *   A. posts.status === 'auditing'：进审的三种来源（首帖 / 有违规记录 / 举报满 5 人）；
+ *   B. 【v1.7.1】还有 pending 举报、但帖子本身还是 active / ended 的（不足 5 人举报）。
+ *      之前只收 auditing，导致前 4 个举报从来没被管理员看到（石沉大海）—— 合规追溯必须能看到。
+ * 分页：两个来源合并后按 createTime 倒序，只回最新 pageSize 条（默认 20，最大 50）。
+ * 【性能】queries = 1(auditing) + 2(举报) + ceil(帖数/10) + 3×ceil(n/10)（n = 本页条数），
+ *   全部批量并发，绝不在 map 循环里对每条帖子单独查 reports / users。*/
+async function handleGetAuditQueue(db, payload) {
+  const input = payload || {};
+  // 页码从 0 开始；pageSize 默认 20，显式传值则夹在 1~AUDIT_PAGE_MAX
+  const page = Math.max(0, Math.floor(Number(input.page) || 0));
+  const rawPageSize = Math.floor(Number(input.pageSize) || 0) || AUDIT_PAGE_SIZE;
+  const pageSize = Math.min(AUDIT_PAGE_MAX, Math.max(1, rawPageSize));
+
+  // 1) status === 'auditing' 的帖子
+  let auditingRows = [];
   try {
     const res = await db.collection(POSTS)
       .where({ status: 'auditing' })
       .orderBy('createTime', 'desc')
-      .limit(AUDIT_LIST_LIMIT)
+      .limit(AUDIT_SCAN_LIMIT)
       .get();
-    rows = (res && res.data) || [];
+    auditingRows = (res && res.data) || [];
   } catch (err) {
     if (isMissingCollection(err)) {
-      return { ok: true, total: 0, list: [] }; // 集合未建 = 队列为空，不算错误
+      return { ok: true, total: 0, page: page, pageSize: pageSize, hasMore: false, list: [] };
     }
     return {
       ok: false,
@@ -852,8 +1020,46 @@ async function handleGetAuditQueue(db) {
     };
   }
 
+  const auditingIdSet = {};
+  auditingRows.forEach(function (doc) {
+    if (doc && doc._id) auditingIdSet[doc._id] = true;
+  });
+
+  // 2) 所有未处理举报 -> 取出它们关联的 postId（排除已经在 auditing 队列里的）
+  const pendingReports = await loadPendingReportDocs(db);
+  const reportedPostIds = [];
+  const seenReportPost = {};
+  pendingReports.forEach(function (doc) {
+    const postId = String((doc && doc.postId) || '');
+    if (!postId || auditingIdSet[postId] || seenReportPost[postId]) return;
+    seenReportPost[postId] = true;
+    reportedPostIds.push(postId);
+  });
+
+  // 3) 批量取这些帖子的帖子文档（帖子可能已被用户删除，查不到就跳过）
+  let reportedRows = [];
+  if (reportedPostIds.length) {
+    const postMap = await loadPostsByIds(db, reportedPostIds.slice(0, REPORTED_POST_FETCH_LIMIT));
+    reportedRows = reportedPostIds.map(function (postId) {
+      return postMap[postId] || null;
+    }).filter(function (doc) {
+      if (!doc || !doc._id) return false;
+      // 已下架的帖子不再进待办（举报会在 reject 时一并结案；残留的 pending 举报由人工排查）
+      return String(doc.status || '') !== 'deleted';
+    });
+  }
+
+  // 4) 合并两个来源 + 按发布时间倒序 + 分页（只对本页数据做批量联查，控制响应耗时）
+  const merged = auditingRows.concat(reportedRows).sort(function (a, b) {
+    return (Number(b && b.createTime) || 0) - (Number(a && a.createTime) || 0);
+  });
+
+  const start = page * pageSize;
+  const rows = merged.slice(start, start + pageSize);
+  const hasMore = merged.length > start + rows.length;
+
   if (!rows.length) {
-    return { ok: true, total: 0, list: [] };
+    return { ok: true, total: 0, page: page, pageSize: pageSize, hasMore: false, list: [], auditingCount: 0, reportedCount: 0 };
   }
 
   const postIds = [];
@@ -864,7 +1070,7 @@ async function handleGetAuditQueue(db) {
     if (author) authorIds.push(author);
   });
 
-  // 三个批量查询并发（不是循环单条查）：举报记录 / 发帖人资料 / 发帖人历史帖数
+  // 三个批量查询并发（不是循环单条查）：举报记录 / 发帖人资料（字段白名单） / 发帖人历史帖数
   const batch = await Promise.all([
     loadPendingReportsByPostIds(db, postIds),
     loadUsersByOpenids(db, authorIds),
@@ -874,8 +1080,20 @@ async function handleGetAuditQueue(db) {
   const userMap = batch[1] || {};
   const postCountMap = batch[2] || {};
 
+  let auditingCount = 0;
+  let reportedCount = 0;
+
   const list = rows.map(function (doc) {
     const postId = doc._id || '';
+    const postStatus = String(doc.status || '');
+    // 不是 auditing = 被举报但仍在正常展示的帖子：前端按钮文案要换成【忽略举报】
+    const isAuditing = postStatus === 'auditing';
+    if (isAuditing) {
+      auditingCount += 1;
+    } else {
+      reportedCount += 1;
+    }
+
     const authorOpenid = String(doc.authorOpenid || doc._openid || '');
     const user = userMap[authorOpenid] || {};
     const reports = reportMap[postId] || [];
@@ -885,9 +1103,11 @@ async function handleGetAuditQueue(db) {
     const totalPosts = Number(postCountMap[authorOpenid]) || 0;
     const historyCount = totalPosts > 0 ? totalPosts - 1 : 0;
 
-    const auditTags = buildAuditTags(reportCount, warningCount, historyCount);
+    const auditTags = isAuditing
+      ? buildAuditTags(reportCount, warningCount, historyCount)
+      : buildReportedTags(reportCount, warningCount);
     if (!auditTags.length) {
-      // 兜底：三个条件都没命中（历史脏数据）也要有标签，不能让卡片顶部空着
+      // 兜底：条件都没命中（历史脏数据）也要有标签，不能让卡片顶部空着
       auditTags.push({ type: 'other', text: '人工复核' });
     }
 
@@ -902,15 +1122,19 @@ async function handleGetAuditQueue(db) {
       authorName: String(doc.authorName || user.nickname || ''),
       // 校区：非敏感值，审核时用来判断帖子内容与身份是否自洽
       authorCampus: String(doc.authorCampus || user.campus || ''),
-      // 学号：脱敏（管理员用完整学号搜索时才看得到核对入口）
-      authorStudentIdMasked: maskStudentId(user.studentId),
+      // 【v1.7.1】学号脱敏字段不再下发：批量查 users 只取昵称/校区/警告次数（性能），
+      //   审核判断靠帖子内容 + 举报理由，不需要学号；需要核身份时走「学号申诉」Tab 搜索。
+      authorStudentIdMasked: '',
       authorWarningCount: warningCount,
       reportCount: reportCount,
       // 最新一条举报理由：管理员扫一眼就知道争议点
       latestReportReason: reportCount ? String(reports[0].reason || '') : '',
-      // auditReason：多条件用逗号拼接，例如「被用户举报(2次),新用户首帖」
+      // auditReason：多条件用逗号拼接，例如「被用户举报(2次),新用户首帖」/「被举报(2次),尚未达到下架阈值」
       auditReason: auditTags.map(function (tag) { return tag.text; }).join(','),
       auditTags: auditTags,
+      // 帖子当前状态（auditing / active / ended）：前端靠它决定【通过】还是【忽略举报】
+      postStatus: postStatus,
+      isAuditing: isAuditing,
       // 云端原始进审备注（如「管理员确认违规」）：保留给管理员看历史
       sourceReason: String(doc.auditReason || ''),
       auditSource: String(doc.auditSource || ''),
@@ -919,19 +1143,38 @@ async function handleGetAuditQueue(db) {
     };
   });
 
-  return { ok: true, total: list.length, list: list };
+  return {
+    ok: true,
+    total: list.length,
+    page: page,
+    pageSize: pageSize,
+    hasMore: hasMore,
+    // 队列里还剩多少条（两个来源合并后的总数），前端用来提示「还有 N 条」
+    pendingTotal: merged.length,
+    auditingCount: auditingCount,
+    reportedCount: reportedCount,
+    list: list
+  };
 }
 
 /* 旧的 approvePost / deletePost / ignore / violate 已删除，统一走 approve / reject（见上文）。
    为什么不留兼容层：两套写库同时存在，很容易出现「下架了再 approve 上线」这种状态反转，
    审核流的唯一性（一个人、一个队列、两个动作）就守不住了。*/
 
-/* ---------------- 用户处置（v1.6.0）：记警告 / 封禁 ---------------- */
+/* ---------------- 用户处置（v1.6.0）：记警告 / 封禁 ----------------
+ * 【v1.7.1 合规追溯】两个动作都必须带 reason（前端 ActionSheet 选的预设原因）：
+ *   1) reason 写进 admin_logs（违规定性与事后审计都要能查到「为什么罚」）；
+ *   2) reason 写进站内通知（被处罚人必须知道具体原因，而不是一句「因违规」）。*/
 
 async function handleAddWarning(db, adminOpenid, payload) {
   const targetOpenid = String(payload.targetOpenid || '').trim();
+  const reason = String(payload.reason || '').trim();
+
   if (!targetOpenid) {
     return { ok: false, code: 'TARGET_REQUIRED', message: '缺少目标用户' };
+  }
+  if (!reason) {
+    return { ok: false, code: 'REASON_REQUIRED', message: '请先选择处罚原因' };
   }
 
   const doc = await loadUserDoc(db, targetOpenid);
@@ -944,16 +1187,24 @@ async function handleAddWarning(db, adminOpenid, payload) {
 
   const warning = await bumpUserWarning(db, targetOpenid, 'admin-warning');
 
+  // 站内通知：原因 + 当前次数 + 后果 + 申诉渠道，一个都不能缺
+  const parts = ['管理员已对你的账号记一次违规警告（原因：' + reason + '）。'];
+  parts.push('当前累计 ' + warning.warningCount + '/' + WARNING_BAN_THRESHOLD + ' 次。');
+  parts.push(warning.banned
+    ? '违规累计已达 ' + WARNING_BAN_THRESHOLD + ' 次，账号已被限制使用。'
+    : '累计满 ' + WARNING_BAN_THRESHOLD + ' 次将限制账号使用。');
+  parts.push('如有疑问请联系管理员邮箱：' + ADMIN_CONTACT_EMAIL);
+
   const notified = await sendUserMessage(
     db,
     targetOpenid,
     '违规警告通知',
-    '管理员已对你的账号记一次违规警告（当前 ' + warning.warningCount + '/' + WARNING_BAN_THRESHOLD +
-    ' 次）。累计满 ' + WARNING_BAN_THRESHOLD + ' 次将限制账号使用。如有疑问请联系管理员邮箱：' + ADMIN_CONTACT_EMAIL,
-    { warningCount: warning.warningCount }
+    parts.join(''),
+    { reason: reason, warningCount: warning.warningCount }
   );
 
   const logged = await writeLog(db, adminOpenid, 'addWarning', targetOpenid, {
+    reason: reason,
     warningCount: warning.warningCount,
     banned: warning.banned,
     notified: notified
@@ -962,6 +1213,7 @@ async function handleAddWarning(db, adminOpenid, payload) {
   return {
     ok: true,
     targetOpenid: targetOpenid,
+    reason: reason,
     warningCount: warning.warningCount,
     banned: warning.banned,
     notified: notified,
@@ -972,8 +1224,12 @@ async function handleAddWarning(db, adminOpenid, payload) {
 async function handleBanUser(db, adminOpenid, payload) {
   const targetOpenid = String(payload.targetOpenid || '').trim();
   const reason = String(payload.reason || '').trim();
+
   if (!targetOpenid) {
     return { ok: false, code: 'TARGET_REQUIRED', message: '缺少目标用户' };
+  }
+  if (!reason) {
+    return { ok: false, code: 'REASON_REQUIRED', message: '请先选择封禁原因' };
   }
 
   const doc = await loadUserDoc(db, targetOpenid);
@@ -1010,8 +1266,8 @@ async function handleBanUser(db, adminOpenid, payload) {
     db,
     targetOpenid,
     '账号已被限制使用',
-    '您的账号因违规已被限制使用' + (reason ? '（原因：' + reason + '）' : '') +
-    '。如有疑问请联系管理员邮箱：' + ADMIN_CONTACT_EMAIL,
+    '您的账号已被限制使用（原因：' + reason + '）。封禁期间不能发布、申请、评价与举报，' +
+    '如有疑问请联系管理员邮箱：' + ADMIN_CONTACT_EMAIL,
     { reason: reason }
   );
 
@@ -1025,6 +1281,7 @@ async function handleBanUser(db, adminOpenid, payload) {
     ok: true,
     targetOpenid: targetOpenid,
     role: 'banned',
+    reason: reason,
     blacklist: blacklist,
     notified: notified,
     logged: logged
@@ -1091,7 +1348,7 @@ exports.main = async (event) => {
   }
 
   // v1.7.0：统一审核流（旧 getReports / ignore / violate / getAuditingPosts / approvePost / deletePost 已合并）
-  if (action === 'getAuditQueue') return handleGetAuditQueue(db);
+  if (action === 'getAuditQueue') return handleGetAuditQueue(db, payload);
   if (action === 'approve') return handleApprove(db, openid, payload);
   if (action === 'reject') return handleReject(db, openid, payload);
   if (action === 'searchUser') return handleSearchUser(db, payload);

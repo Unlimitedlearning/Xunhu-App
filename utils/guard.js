@@ -1,12 +1,17 @@
 // utils/guard.js
 // 全局能力校验（路由层拦截，页面统一调用）
 //
-// 原则：登录 ≠ 可用。
-//   1) 未登录          -> 弹窗「请先前往「我的」页面登录」，确定后跳「我的」
-//   2) 受罚者（banned）-> Toast「您的账号因违规已被限制使用，如有疑问请联系管理员邮箱：xxx」
-//   3) 已登录但资料不全 -> 弹窗「您还没有完善联系方式/昵称，队友无法联系您。点击确定去完善资料」
-//   4) 全部满足         -> 放行
-// 资料是否"完善"由 store.isProfileReady() 单点裁决（昵称 + 联系方式 + 学号格式），页面不再自己判。
+// 【v1.6.0 漏斗优化】把「能不能看」和「能不能写」拆成两道门：
+//   1) checkLogin()   —— 只校验登录（openid 已就位），用于**大厅 / 详情页浏览**。
+//       为什么：以前浏览详情也要资料齐全，新用户点进第一条帖子就被弹窗拦下去填表，
+//       这是最伤的漏斗漏洞 —— 先让他看到有价值的内容，再在真正要动作时才要求补资料。
+//   2) ensureReady()  —— 校验昵称 + 校区 + 学号 + 联系方式完备，只用于【发布】与【申请】。
+//       为什么：这两个动作会让对方拿到你的展示信息 / 联系方式，资料不全等于给别人制造无效沟通。
+//   3) 受罚者（role === 'banned'）单独一层：banned 只拦详情 / 发布 / 申请 / 评价 / 举报，
+//      可以浏览大厅与个人中心（口径「二、角色与账号权限」），所以它不塞进 checkLogin，
+//      由调用点显式判断（isBanned + promptBanned）。
+//
+// 资料是否"完善"由 store.isProfileReady() 单点裁决（昵称 + 校区 + 学号 + 联系方式），页面不再自己判。
 
 const store = require('./store');
 const constants = require('./constants');
@@ -33,7 +38,7 @@ function promptLogin() {
 function promptProfile() {
   wx.showModal({
     title: '资料未完善',
-    content: '您还没有完善昵称、真实姓名与联系方式，队友无法联系您。点击确定去完善资料',
+    content: '发布与申请前需要先填好昵称、校区、学号与联系方式，否则队友无法联系您。点击确定去完善资料',
     confirmText: '确定',
     cancelText: '取消',
     success: function (res) {
@@ -58,8 +63,24 @@ function isReady() {
   return store.isLoggedIn() && !store.isBanned() && store.isProfileReady();
 }
 
-// 拦截判断：不满足条件会弹窗并返回 false，调用方直接 return 即可
-// 顺序：未登录 -> 受罚者 -> 资料未完善（封禁优先于「资料未完善」，否则会误导用户去改资料）
+/**
+ * 【浏览门】只校验登录：大厅点卡片、详情页浏览走这道。
+ * 不检查资料完备，也不检查是否封禁（封禁由调用点用 isBanned() 单独判）。
+ * @return {boolean} false 表示已弹窗提示，调用方直接 return
+ */
+function checkLogin() {
+  if (!store.isLoggedIn()) {
+    promptLogin();
+    return false;
+  }
+  return true;
+}
+
+/**
+ * 【功能门】发布 / 申请按钮专用：登录 -> 封禁 -> 资料完备
+ * 顺序：未登录 -> 受罚者 -> 资料未完善（封禁优先于「资料未完善」，否则会误导用户去改资料）
+ * @return {boolean} false 表示已弹窗提示，调用方直接 return
+ */
 function ensureReady() {
   if (!store.isLoggedIn()) {
     promptLogin();
@@ -77,6 +98,7 @@ function ensureReady() {
 }
 
 module.exports = {
+  checkLogin,
   ensureReady,
   isReady,
   isBanned: store.isBanned,

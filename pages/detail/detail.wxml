@@ -99,8 +99,16 @@
   <view class="sub-text">可能已被发起人删除或结束</view>
 </view>
 
+<!-- 兜底：未登录（v1.6.0 浏览门：只需登录，不要求资料完备） -->
+<view class="empty-state" wx:if="{{needLogin}}">
+  <text class="icon">🔒</text>
+  <view class="text">登录后才能查看这条信息</view>
+  <view class="sub-text">登录只确认身份，不要求填写证件与真实信息</view>
+  <view class="login-cta" hover-class="login-cta-hover" hover-stay-time="80" bindtap="goLogin">去登录</view>
+</view>
+
 <!-- 底部操作区：举报（次要） + 主按钮（管理员预览时整条隐藏，禁止在预览页报名/举报） -->
-<view class="action-bar" wx:if="{{post && !notFound && !adminPreview}}">
+<view class="action-bar" wx:if="{{post && !notFound && !adminPreview && !needLogin}}">
   <!-- 左侧小字按钮：发帖人 -> 结束（已结束则置灰不可点）；其他人 -> 举报 -->
   <block wx:if="{{isOwner}}">
     <text class="report-btn report-btn-disabled" wx:if="{{isEnded}}">已结束</text>

@@ -11,7 +11,7 @@ const HOUR = 60 * 60 * 1000;
 
 /**
  * 帖子假数据（对应 posts 集合）
- * category 枚举：team 组队 / resume 自荐 / partner 搭子
+ * category 枚举：team 组队 / resume 自荐 / partner 同好（v1.6.0 起展示文案为「同好」）
  * status   枚举：auditing 审核中 / active 进行中 / ended 已结束
  */
 const postList = [
@@ -42,8 +42,8 @@ const postList = [
   {
     id: "7392015486",
     category: "partner",
-    title: "寻晚上去图书馆复习四级的搭子",
-    content: "一个人容易玩手机，找个搭子互相监督，晚上七点到十点，图书馆三楼自习区。",
+    title: "寻晚上去图书馆复习四级的同好",
+    content: "一个人容易玩手机，找个同好互相监督，晚上七点到十点，图书馆三楼自习区。",
     tags: ["四级", "学习"],
     authorName: "王同学",
     contact: "wxid_wang_lib",
@@ -78,7 +78,7 @@ const postList = [
   {
     id: "9021837465",
     category: "partner",
-    title: "周末约羽毛球搭子",
+    title: "周末约羽毛球同好",
     content: "水平入门，主要想活动一下，周六下午体育馆，缺一到两人凑双打。",
     tags: ["羽毛球", "运动"],
     authorName: "黄同学",

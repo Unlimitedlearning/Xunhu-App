@@ -6,17 +6,22 @@
 //   v1.4  新增真实姓名背书（3.3）与站内通知 / 公告（3.4）
 //   v1.5  【法律口径修订】清除「身份认证 / 官方认证 / 实名认证」等表述：
 //         1.2 学号改为「账号唯一性校验 + 不接入学籍系统」
-//         1.3 新增统一免责声明（constants.IDENTITY_DISCLAIMER，全站唯一来源）
+//         1.3 新增统一免责声明（v1.6.0 起该句已由 constants.CAMPUS_DISCLAIMER 取代）
 //         3.3 真实姓名降级为「自我声明」，明确不保证姓名与本人一致
 //         5.3 新增线下合作纠纷与损失的免责条款
+//   v1.6.0 【校区取代真实姓名 + 审核口径去伪】
+//         1.3 / 3.3 不再收集真实姓名，只收校区（constants.CAMPUS_DISCLAIMER）
+//         2.2 「机审」改为「本地词库自动校验 + 人工复核」（个人主体无法调用微信机审）
+//         4.4 「有权删除评价」改为「核实后直接后台删除违规评价 + 警告/封禁」（对齐真实操作，不做虚假承诺）
+//         3.3 新增账号注销（删除资料 / 下架内容 / 清理申请与评价）
 const constants = require('../../utils/constants');
 
 Page({
   data: {
     updateDate: '2026-11-03', // TODO 改为本次发版的真实日期
-    version: 'v1.5',
-    // 声明文案不在这里写死：协议页与个人页共用 constants.IDENTITY_DISCLAIMER，
+    version: 'v1.6.0',
+    // 校区口径不在这里写死：协议页与个人页共用 constants.CAMPUS_DISCLAIMER，
     // 以后法律口径要调，只改 constants 一处，两个页面同时生效
-    identityDisclaimer: constants.IDENTITY_DISCLAIMER
+    campusDisclaimer: constants.CAMPUS_DISCLAIMER
   }
 });

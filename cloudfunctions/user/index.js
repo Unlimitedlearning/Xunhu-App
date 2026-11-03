@@ -1,5 +1,5 @@
 // cloudfunctions/user/index.js
-// 作用：用户资料（昵称 / 学号 / 简历 / 联系方式）的读写，全部落在云端 users 集合。
+// 作用：用户资料（昵称 / 校区 / 学号 / 简历 / 联系方式）的读写 + 账号注销，全部落在云端 users 集合。
 //
 // 为什么放在服务端而不是客户端直接读写：
 //   1) 身份的最终把关必须在服务端：openid 只从 cloud.getWXContext() 取，客户端传什么都不认；
@@ -15,23 +15,70 @@
 // 调用方式（均需先「上传并部署」本云函数）：
 //   { action: 'get' }                        -> { ok, data: doc | null }
 //   { action: 'save', profile: {...} }        -> { ok, data: doc }
-//     profile 白名单：nickname / realName / studentId / resume / contact
-//     realName（v1.4.0）：必填，^[\u4e00-\u9fa5]{2,4}$；绑定后不可改（云端强制回落旧值）
+//     profile 白名单：nickname / campus / studentId / resume / contact
+//     campus（v1.6.0）：必填，只能是 CAMPUS_LIST 里的值，非法值直接拒
+//   { action: 'deleteAccount' }               -> { ok, removed: {...} }  注销账号 + 级联清理
+//
+// 【v1.6.0】资料字段：campus（校区）是唯一的地域属性；早前版本的身份背书字段已下线，
+// 老文档里的残留值由下方 LEGACY_FIELDS 统一清除（不再接收、不再下发）。
 
 const cloud = require('wx-server-sdk');
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 
 const COLLECTION = 'users';
+// 黑名单（v1.6.0）：只存 openid + 原因，客户端零权限
+const BLACKLIST = 'blacklist';
+// 注销 / 封禁后命中黑名单时的统一拦截文案
+const BLACKLIST_MESSAGE = '该账号已注销或已被限制使用，如有疑问请联系管理员邮箱：xunhu_app@qq.com';
+// 黑名单写入需要权限的集合（客户端不可读写）
+const POSTS = 'posts';
+const APPLICATIONS = 'applications';
+const REVIEWS = 'reviews';
+const MESSAGES = 'messages';
+const POST_CONTACTS = 'post_contacts';
 
 // 学号校验：广工 10 位，以 31 开头
 // 与小程序端 utils/constants.js 的 STUDENT_ID_REGEX 保持一致（云函数目录独立，无法 require 小程序文件）
 const STUDENT_ID_REGEX = /^31\d{8}$/;
 
-// 真实姓名校验：2-4 个纯中文汉字（与小程序端 constants.REAL_NAME_REGEX 同值）
-// 【注意】这里只做格式校验：平台不收集证件、不做实名核验，也不向任何第三方公开；
-//   该字段只落在 users 集合，不进 posts / applications / reviews，不参与任何公开下发。
-const REAL_NAME_REGEX = /^[\u4e00-\u9fa5]{2,4}$/;
+/* ---------------- 校区（v1.6.0） ----------------
+ * 取值域与小程序端 constants.CAMPUS_LIST 同值：改一处必须同步另一处。
+ * 为什么校验必须放服务端：picker 只是体验层，改包可以传任意字符串 ——
+ *   一旦脏值进库，「按校区展示 / 匹配」就失效，甚至能把广告文本塞进展示字段。
+ * 注：CAMPUS_OPTIONS（picker 当前开放项）只在客户端生效，服务端只认 CAMPUS_LIST。
+ */
+const CAMPUS_LIST = ['揭阳', '大学城', '东风路', '龙洞', '番禺', '沙河'];
+const CAMPUS_INVALID_MESSAGE = '校区不在可选范围内，请重新选择';
+
+/* ---------------- 历史字段清除（v1.6.0） ----------------
+ * users 已不再收集「真实姓名」类信息，只存 campus。
+ * 老文档里可能还留着那个字段：读出时剔除（不下发客户端），保存时物理删除（库里不留已不收集的数据）。
+ * 全项目字段名只在这里出现一次 —— 确认线上库里已无该字段后，把 LEGACY_FIELDS 改成空数组即可，
+ * 这两个小函数也可以一并删掉。
+ */
+const LEGACY_FIELDS = ['realName'];
+
+// 读出时剔除历史字段（传 null 也安全）
+function dropLegacyFields(doc) {
+  if (!doc) return doc;
+  for (let i = 0; i < LEGACY_FIELDS.length; i++) {
+    delete doc[LEGACY_FIELDS[i]];
+  }
+  return doc;
+}
+
+// 生成「物理删除历史字段」的更新命令（只对确实有值的文档生效）
+function buildLegacyRemoval(db, primary) {
+  const removal = {};
+  for (let i = 0; i < LEGACY_FIELDS.length; i++) {
+    const field = LEGACY_FIELDS[i];
+    if (primary && primary[field] !== undefined) {
+      removal[field] = db.command.remove();
+    }
+  }
+  return removal;
+}
 
 /* ---------------- 用户角色（v1.1.0 角色底座） ----------------
  * role 只允许三个值：
@@ -163,13 +210,14 @@ function pickRole(doc) {
   return VALID_ROLES.indexOf(role) > -1 ? role : ROLE_USER;
 }
 
-// 字段白名单：只允许这五个字段被客户端写入。
-// 注意：role / _openid / openid / createTime 都不在白名单里 —— 这就是「客户端改不了角色」的根本保证。
+// 字段白名单：只允许这几个字段被客户端写入。
+// 注意：role / warningCount / _openid / openid / createTime 都不在白名单里 —— 这就是「客户端改不了角色」的根本保证。
+// 【v1.6.0】白名单是正面清单：不在列表里的字段（含任何历史字段）传上来也会被丢掉。
 function normalize(input) {
   const source = input || {};
   return {
     nickname: String(source.nickname || '').trim(),
-    realName: String(source.realName || '').trim(),
+    campus: String(source.campus || '').trim(),
     studentId: String(source.studentId || '').trim(),
     resume: String(source.resume || '').trim(),
     contact: String(source.contact || '').trim()
@@ -268,6 +316,146 @@ async function createProfile(db, payload, openid) {
   return { id: res._id, data: Object.assign({ _id: res._id }, doc) };
 }
 
+/* ---------------- 黑名单（v1.6.0） ----------------
+ * 用途：注销 / 封禁后，login / user.save / publish / application 在入口直接拒服务。
+ * 查询失败一律按「未命中」处理（fail-open）：users 记录已在注销时删除，
+ * 黑名单只是第二道锁，不应该因为集合没建就把正常用户全拦在外面。
+ */
+async function isBlacklisted(db, openid) {
+  const value = String(openid || '').trim();
+  if (!value) return false;
+  try {
+    const res = await db.collection(BLACKLIST).where({ openid: value }).limit(1).get();
+    return !!((res && res.data) || []).length;
+  } catch (err) {
+    if (isMissingCollection(err)) return false;
+    console.warn('[user] blacklist 查询失败，按未命中处理：', err && err.message);
+    return false;
+  }
+}
+
+// 写入黑名单（已存在则更新原因与时间，绝不重复插一条）
+async function addToBlacklist(db, openid, reason, source) {
+  const doc = {
+    openid: String(openid || ''),
+    reason: String(reason || 'user_deleted'),
+    source: String(source || 'self'),
+    createTime: Date.now()
+  };
+
+  try {
+    const existed = await db.collection(BLACKLIST)
+      .where({ openid: doc.openid })
+      .limit(1)
+      .get();
+    const row = ((existed && existed.data) || [])[0];
+    if (row && row._id) {
+      await db.collection(BLACKLIST).doc(row._id).update({
+        data: { reason: doc.reason, source: doc.source, updateTime: doc.createTime }
+      });
+      return true;
+    }
+    await db.collection(BLACKLIST).add({ data: doc });
+    return true;
+  } catch (err) {
+    if (!isMissingCollection(err)) {
+      console.error('[user] 写入 blacklist 失败：', err && err.message);
+      return false;
+    }
+  }
+
+  // 集合不存在：建一次后重试（安全规则仍需控制台设置为「所有用户不可读写」）
+  try {
+    await db.createCollection(BLACKLIST);
+    await db.collection(BLACKLIST).add({ data: doc });
+    return true;
+  } catch (retryErr) {
+    console.error('[user] 建集合后仍写入 blacklist 失败：', retryErr && retryErr.message);
+    return false;
+  }
+}
+
+/* ---------------- 级联清理工具（账号注销） ----------------
+ * where().remove() 一次能删的条数有上限，所以统一走「每轮取 100 个 _id → 按 _id in 删」的循环。
+ * 任何一轮出错都只记日志并停止（不能让某一集合报错把整个注销流程搞挂），
+ * 调用方拿到的 removed 是「确已删除」的条数。
+ */
+async function removeByWhere(db, collection, where, label) {
+  const _ = db.command;
+  let removed = 0;
+
+  for (let round = 0; round < 50; round++) {
+    let ids = [];
+    try {
+      const res = await db.collection(collection).where(where).limit(100).field({ _id: true }).get();
+      ids = ((res && res.data) || []).map(function (doc) {
+        return doc && doc._id;
+      }).filter(Boolean);
+    } catch (err) {
+      if (!isMissingCollection(err)) {
+        console.warn('[user][deleteAccount] 读取 ' + label + ' 失败，停止本轮清理：', err && err.message);
+      }
+      return removed;
+    }
+
+    if (!ids.length) return removed;
+
+    try {
+      await db.collection(collection).where({ _id: _.in(ids) }).remove();
+      removed += ids.length;
+    } catch (err) {
+      console.error('[user][deleteAccount] 删除 ' + label + ' 失败：', err && err.message);
+      return removed;
+    }
+  }
+
+  return removed;
+}
+
+// 自己发的帖子全部改 status = 'deleted'（不物理删：已收发的评价 / 举报需要保留上下文）
+async function markPostsDeleted(db, openid) {
+  const _ = db.command;
+  let updated = 0;
+  const now = Date.now();
+
+  for (let round = 0; round < 50; round++) {
+    let ids = [];
+    try {
+      const res = await db.collection(POSTS)
+        .where({ authorOpenid: openid, status: _.neq('deleted') })
+        .limit(100)
+        .field({ _id: true })
+        .get();
+      ids = ((res && res.data) || []).map(function (doc) {
+        return doc && doc._id;
+      }).filter(Boolean);
+    } catch (err) {
+      if (!isMissingCollection(err)) {
+        console.warn('[user][deleteAccount] 读取帖子失败：', err && err.message);
+      }
+      return updated;
+    }
+
+    if (!ids.length) return updated;
+
+    try {
+      await db.collection(POSTS).where({ _id: _.in(ids) }).update({
+        data: {
+          status: 'deleted',
+          deleteTime: now,
+          deleteReason: 'user_deleted'
+        }
+      });
+      updated += ids.length;
+    } catch (err) {
+      console.error('[user][deleteAccount] 下架帖子失败：', err && err.message);
+      return updated;
+    }
+  }
+
+  return updated;
+}
+
 exports.main = async (event) => {
   const ctx = cloud.getWXContext();
   const openid = ctx.OPENID;
@@ -282,7 +470,10 @@ exports.main = async (event) => {
   if (action === 'get') {
     try {
       const docs = await findAll(db, openid);
-      return { ok: true, data: docs[0] || null };
+      const doc = docs[0] || null;
+      // 【v1.6.0】历史字段不下发给客户端
+      dropLegacyFields(doc);
+      return { ok: true, data: doc };
     } catch (err) {
       return {
         ok: false,
@@ -293,6 +484,12 @@ exports.main = async (event) => {
   }
 
   if (action === 'save') {
+    // 【v1.6.0】黑名单拦截：已注销 / 已封禁的账号不允许再写资料
+    if (await isBlacklisted(db, openid)) {
+      console.warn('[user][save] 命中黑名单，拒绝保存资料：', openid);
+      return { ok: false, code: 'ACCOUNT_BLOCKED', message: BLACKLIST_MESSAGE };
+    }
+
     // 【role 不可写】客户端若在 profile 里夹带 role（含 role:'admin'），一律丢弃。
     // normalize() 已经是白名单，这里再显式删一次，防止以后有人把实现改成 Object.assign 时漏掉。
     if (event && event.profile && typeof event.profile === 'object') {
@@ -307,14 +504,13 @@ exports.main = async (event) => {
       return { ok: false, code: 'NICKNAME_TOO_LONG', message: '昵称最多 20 个字' };
     }
 
-    // 【真实姓名】必填 + 纯中文 2-4 字。
-    // 前端已拦一道，这里再校验一次：改包 / 旧版客户端绕过前端时仍会被拒。
-    // 老用户没填过 realName 的，在这里被强制要求补全（前端 isProfileReady 同步拦住入口）。
-    if (!data.realName) {
-      return { ok: false, code: 'REAL_NAME_REQUIRED', message: '请填写真实姓名（仅用于组队沟通背书）' };
+    // 【校区】v1.6.0 必填门槛：只接受白名单里的值。
+    // 前端 picker 只能选 CAMPUS_OPTIONS，这里再校验一次：改包 / 旧版客户端绕过前端时仍会被拒。
+    if (!data.campus) {
+      return { ok: false, code: 'CAMPUS_REQUIRED', message: '请选择你所在的校区' };
     }
-    if (!REAL_NAME_REGEX.test(data.realName)) {
-      return { ok: false, code: 'REAL_NAME_INVALID', message: '请输入 2-4 个汉字的真实姓名' };
+    if (CAMPUS_LIST.indexOf(data.campus) === -1) {
+      return { ok: false, code: 'CAMPUS_INVALID', message: CAMPUS_INVALID_MESSAGE };
     }
     if (data.resume.length > 300) {
       return { ok: false, code: 'RESUME_TOO_LONG', message: '简历最多 300 个字' };
@@ -391,14 +587,8 @@ exports.main = async (event) => {
           payload.studentId = boundStudentId;
         }
 
-        // 【真实姓名锁】已合法绑定过真实姓名时，同样强制回落到库里的旧值（绑定后不可修改）。
-        // 判定标准与学号锁一致：旧值本身不合法的（脏数据）不锁，否则用户永远改不回来。
-        const boundRealName = String(primary.realName || '').trim();
-        const realNameLocked = REAL_NAME_REGEX.test(boundRealName);
-        if (realNameLocked && payload.realName !== boundRealName) {
-          console.warn('[user] 真实姓名已绑定，忽略请求中的新值：', openid, '->', boundRealName);
-          payload.realName = boundRealName;
-        }
+        // 【历史字段清理】写入时顺手物理删除：不再收集的数据不该继续躺在库里
+        Object.assign(payload, buildLegacyRemoval(db, primary));
 
         await db.collection(COLLECTION).doc(primary._id).update({ data: payload });
 
@@ -418,8 +608,7 @@ exports.main = async (event) => {
           ok: true,
           data: Object.assign({}, primary, payload),
           removed: removed,
-          studentIdLocked: studentIdLocked,
-          realNameLocked: realNameLocked
+          studentIdLocked: studentIdLocked
         };
       }
 
@@ -445,6 +634,54 @@ exports.main = async (event) => {
         message: String((err && err.message) || '')
       };
     }
+  }
+
+  // 【v1.6.0】账号注销（合规必需）：先黑名单 -> 再删资料 -> 再级联清理
+  if (action === 'deleteAccount') {
+    const blacklisted = await addToBlacklist(db, openid, 'user_deleted', 'self');
+    if (!blacklisted) {
+      // 黑名单写不进去就不往下删：否则用户删完还能重新登录，等于假注销
+      return {
+        ok: false,
+        code: 'BLACKLIST_WRITE_FAILED',
+        message: '注销失败，请确认 blacklist 集合已创建后重试'
+      };
+    }
+
+    const removed = { users: 0, posts: 0, applications: 0, reviews: 0, messages: 0, contacts: 0 };
+
+    // 1) 删 users（含历史重复行）
+    try {
+      const docs = await findAll(db, openid);
+      for (let i = 0; i < docs.length; i++) {
+        try {
+          await db.collection(COLLECTION).doc(docs[i]._id).remove();
+          removed.users++;
+        } catch (err) {
+          console.warn('[user][deleteAccount] 删除资料失败：', docs[i]._id, err && err.message);
+        }
+      }
+    } catch (err) {
+      console.warn('[user][deleteAccount] 读取资料失败：', err && err.message);
+    }
+
+    // 2) 自己发的帖子全部下架（status -> deleted）
+    removed.posts = await markPostsDeleted(db, openid);
+
+    // 3) 级联清理：我发出的 / 我收到的申请与评价，以及我收到的通知
+    removed.applications += await removeByWhere(db, APPLICATIONS, { applicantId: openid }, 'applications(applicantId)');
+    removed.applications += await removeByWhere(db, APPLICATIONS, { receiverId: openid }, 'applications(receiverId)');
+    removed.applications += await removeByWhere(db, APPLICATIONS, { _openid: openid }, 'applications(_openid)');
+    removed.reviews += await removeByWhere(db, REVIEWS, { reviewerOpenid: openid }, 'reviews(reviewer)');
+    removed.reviews += await removeByWhere(db, REVIEWS, { revieweeOpenid: openid }, 'reviews(reviewee)');
+    removed.messages += await removeByWhere(db, MESSAGES, { _openid: openid }, 'messages(_openid)');
+    removed.messages += await removeByWhere(db, MESSAGES, { toOpenid: openid }, 'messages(toOpenid)');
+
+    // 4) 帖子联系方式（_id = postId）：注销后没人该再看得到这些联系方式
+    removed.contacts = await removeByWhere(db, POST_CONTACTS, { authorOpenid: openid }, 'post_contacts(author)');
+
+    console.log('[user][deleteAccount] openid=' + openid + ' 完成：', JSON.stringify(removed));
+    return { ok: true, removed: removed };
   }
 
   // 对外公开信息已下线：详情页不再展示学号徽章，因此不保留任何「跨用户读别人资料」的接口

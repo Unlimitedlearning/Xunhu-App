@@ -185,7 +185,8 @@ Page({
 
   /**
    * 上传：调云函数 publish
-   *   成功 -> 云端 status = 'active'（通过直接上线）
+   *   成功且 status = 'active' -> 直接上线
+   *   成功且 status = 'auditing'（v1.6.0：首帖 / 有违规记录）-> 进人工复核，文案必须说清楚
    *   云端判定违规 -> 提示修改，**不清表单、不存草稿**（草稿是给网络故障用的，不能让违规内容落盘反复提交）
    *   其他异常 -> 存草稿，下次进发布页能恢复
    */
@@ -193,10 +194,16 @@ Page({
     const that = this;
     wx.showLoading({ title: '审核中...', mask: true });
 
-    store.savePost(postData).then(function () {
+    store.savePost(postData).then(function (saved) {
       wx.hideLoading();
       store.removeDraft(); // 发布成功后清掉旧草稿
-      wx.showToast({ title: '发布成功，已上线', icon: 'none' });
+      // v1.6.0：首帖 / 有违规记录的账号会被强制人工复核，不能让用户以为已经上线了
+      const pending = !!(saved && saved.status === 'auditing');
+      wx.showToast({
+        title: pending ? '已提交审核，通过后自动上线' : '发布成功，已上线',
+        icon: 'none',
+        duration: pending ? 2500 : 1500
+      });
       that.resetForm();
       that.backToHall(1200);
     }).catch(function (err) {

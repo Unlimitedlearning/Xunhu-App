@@ -17,6 +17,7 @@
         <view class="avatar">{{avatarText}}</view>
         <view class="profile-info">
           <view class="name">{{nickname ? nickname : '未设置昵称'}}</view>
+          <view class="student-id" wx:if="{{campus}}">校区：{{campus}}</view>
           <view class="student-id" wx:if="{{studentId}}">学号：{{studentId}}</view>
           <view class="student-id" wx:else>学号：未填写</view>
         </view>
@@ -31,7 +32,7 @@
 
     <!-- 资料未完善：先提示，避免发布/申请时找不到展示名或联系方式 -->
     <view class="notice-card" wx:if="{{!isProfileReady}}">
-      昵称、真实姓名、学号与联系方式都填好并保存后，才能在大厅发布需求、申请他人需求（否则队友无法联系您）。
+      昵称、校区、学号与联系方式都填好并保存后，才能在大厅发布需求、申请他人需求（否则队友无法联系您）。
     </view>
 
     <!-- 简历引导：这份描述会公开在详情页，写清楚才有人敢点「申请加入」 -->
@@ -50,15 +51,15 @@
              value="{{nickname}}"
              bindinput="onNicknameInput" />
 
-      <view class="section-title section-title-gap">真实姓名<text class="required">*</text><text class="badge-private">仅用于组队沟通背书</text></view>
-      <input class="text-input {{isRealNameBound ? 'text-input-locked' : ''}}"
-             disabled="{{isRealNameBound}}"
-             placeholder="填写真实姓名（2-4 个汉字）"
-             maxlength="4"
-             value="{{realName}}"
-             bindinput="onRealNameInput" />
-      <text class="tip" wx:if="{{isRealNameBound}}">已绑定，不可修改</text>
-      <text class="tip">{{realNameTip}}</text>
+      <!-- 校区（v1.6.0）：只能从固定选项里选，用于展示与匹配，不涉及任何身份认证 -->
+      <view class="section-title section-title-gap">校区<text class="required">*</text><text class="badge-private">用于展示与匹配</text></view>
+      <picker mode="selector"
+              range="{{campusOptions}}"
+              value="{{campusIndex}}"
+              bindchange="onCampusChange">
+        <view class="text-input picker-input {{campus ? '' : 'picker-placeholder'}}">{{campus ? campus : '请选择你所在的校区'}}</view>
+      </picker>
+      <text class="tip">{{campusTip}}</text>
 
       <view class="section-title section-title-gap">学号<text class="required">*</text></view>
       <input class="text-input {{isStudentIdBound ? 'text-input-locked' : ''}}"
@@ -130,6 +131,9 @@
     </view>
 
     <view class="logout-btn" bindtap="handleLogout">退出登录</view>
+
+    <!-- 账号注销（v1.6.0 合规）：二次确认后调 user 云函数 deleteAccount，删除不可恢复 -->
+    <view class="delete-account-btn" hover-class="delete-account-hover" hover-stay-time="80" bindtap="handleDeleteAccount">注销账号</view>
 
   </block>
 

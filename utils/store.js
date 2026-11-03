@@ -59,8 +59,15 @@ let initPromise = null;
 async function fetchOpenid() {
   if (cache.openid) return cache.openid;
   const res = await wx.cloud.callFunction({ name: CLOUD_FUNCTIONS.LOGIN });
-  const openid = (res && res.result && res.result.openid) || '';
-  if (!openid) throw new Error('login 云函数没有返回 openid，请确认已上传并部署');
+  const result = (res && res.result) || {};
+  const openid = result.openid || '';
+  if (!openid) {
+    // 【v1.6.0】注销 / 封禁账号：login 会回 ACCOUNT_BLOCKED（openid 置空），
+    // 这里把云端的用户可读文案带上，页面（个人页登录、发布、申请）直接展示就够用户看懂。
+    const err = new Error(result.message || 'login 云函数没有返回 openid，请确认已上传并部署');
+    err.code = result.code || 'NO_OPENID';
+    throw err;
+  }
   cache.openid = openid;
   return openid;
 }
@@ -805,14 +812,15 @@ async function callUserFunction(data) {
 }
 
 // 云端文档 -> 内存对象；没有文档才是 null（文档存在但昵称没填时仍返回对象，表单能带出已填的部分）。
-// 是否「完善」（昵称 + 联系方式 + 学号）由 isProfileReady() 判定；
+// 是否「完善」（昵称 + 校区 + 学号 + 联系方式）由 isProfileReady() 判定；
 // role / warningCount 只用于展示（管理后台入口、警告次数），写入永远只能走云函数或控制台。
+// 【v1.6.0】地域属性只有 campus（校区）：取云端字段，旧数据没有就是空串。
 function normalizeProfile(doc) {
   if (!doc) return null;
   return {
     nickname: doc.nickname || '',
-    // 真实姓名（v1.4.0）：只用于组队沟通背书，仅云端私有存储，不在任何页面 / 帖子 / 申请里展示
-    realName: doc.realName || '',
+    // 校区：从固定选项里选的非敏感值（constants.CAMPUS_OPTIONS），用于展示与匹配
+    campus: doc.campus || '',
     studentId: doc.studentId || '',
     resume: doc.resume || '',
     contact: doc.contact || '',
@@ -852,26 +860,26 @@ function getNickname() {
   return (cache.profile && cache.profile.nickname) || '';
 }
 
-// 资料是否「完善」：昵称 + 真实姓名 + 联系方式都非空，且学号能过广工 10 位正则、真实姓名能过 2-4 汉字正则
-// 这是「能不能使用大厅功能」的唯一判定点（guard / profile / 发布 / 申请共用）
-// 【v1.4.0】真实姓名加入完备性校验：老用户没填的会直接被拦，强制他到「我的」补全。
+// 资料是否「完善」：昵称 + 校区 + 学号 + 联系方式都合格
+// 这是「能不能发布 / 申请」的唯一判定点（guard.ensureReady / profile / 发布 / 申请共用）
+// 【v1.6.0】校区：只要值在 CAMPUS_LIST 里就算填写完成。
 function isProfileReady() {
   const profile = cache.profile;
   if (!profile) return false;
   const nickname = (profile.nickname || '').trim();
-  const realName = (profile.realName || '').trim();
+  const campus = (profile.campus || '').trim();
   const contact = (profile.contact || '').trim();
   const studentId = (profile.studentId || '').trim();
   return nickname !== '' && contact !== '' &&
-    constants.REAL_NAME_REGEX.test(realName) &&
+    constants.CAMPUS_LIST.indexOf(campus) > -1 &&
     constants.STUDENT_ID_REGEX.test(studentId);
 }
 
-// 同步读：真实姓名是否已「合法绑定」（前端决定输入框是否禁用；真正的锁在 user 云函数）
-function isRealNameBound() {
+// 同步读：校区是否已选（前端只用来做展示，真正的校验在 user 云函数）
+function isCampusBound() {
   const profile = cache.profile;
   if (!profile) return false;
-  return constants.REAL_NAME_REGEX.test((profile.realName || '').trim());
+  return constants.CAMPUS_LIST.indexOf((profile.campus || '').trim()) > -1;
 }
 
 // 保存资料：写云端，同时更新内存缓存；不写任何本地 Storage
@@ -879,7 +887,7 @@ async function saveProfile(profile) {
   await ensureInit();
   const input = {
     nickname: (profile.nickname || '').trim(),
-    realName: (profile.realName || '').trim(),
+    campus: (profile.campus || '').trim(),
     studentId: (profile.studentId || '').trim(),
     resume: (profile.resume || '').trim(),
     contact: (profile.contact || '').trim()
@@ -888,10 +896,15 @@ async function saveProfile(profile) {
     throw new Error('昵称不能为空');
   }
 
-  // 真实姓名：必填 + 2-4 个汉字（云端还有同样一道，防绕过）
-  if (!constants.REAL_NAME_REGEX.test(input.realName)) {
-    const err = new Error(constants.REAL_NAME_INVALID_MESSAGE);
-    err.code = 'REAL_NAME_INVALID';
+  // 校区：必填 + 必须命中常量白名单（云端还有同样一道，防绕过）
+  if (!input.campus) {
+    const err = new Error(constants.CAMPUS_REQUIRED_MESSAGE);
+    err.code = 'CAMPUS_REQUIRED';
+    throw err;
+  }
+  if (constants.CAMPUS_LIST.indexOf(input.campus) === -1) {
+    const err = new Error(constants.CAMPUS_INVALID_MESSAGE);
+    err.code = 'CAMPUS_INVALID';
     throw err;
   }
 
@@ -905,6 +918,23 @@ async function saveProfile(profile) {
   const result = await callUserFunction({ action: 'save', profile: input });
   cache.profile = normalizeProfile(result.data) || Object.assign({}, input, { updateTime: Date.now() });
   return cache.profile;
+}
+
+/**
+ * 注销账号（v1.6.0 合规）：写黑名单 + 删资料 + 帖子下架 + 级联清理，全部在 user 云函数完成。
+ * 前端只做两件事：调用 + 清空本地缓存/登录态（不然退出后内存里还留着旧资料）。
+ * @return {Promise<{users:number,posts:number,applications:number,reviews:number,messages:number,contacts:number}>}
+ */
+async function deleteAccount() {
+  await ensureInit();
+  const result = await callUserFunction({ action: 'deleteAccount' });
+
+  // 本地清理：帖子快照 / 申请快照 / 登录标记 / 内存缓存的个人数据
+  clearSnapshot(STORAGE_KEYS.CACHE_POSTS);
+  clearSnapshot(STORAGE_KEYS.CACHE_APPLICATIONS);
+  logout();
+
+  return result.removed || {};
 }
 
 /* ---------------- 举报（云端 reports 集合，云函数 report 写入） ----------------
@@ -1435,50 +1465,16 @@ async function callAdminFunction(data) {
   return result;
 }
 
-// 待处理举报列表（云端已联查帖子标题 / 状态 / 权重）
-async function fetchAdminReports() {
+/* 内容审核队列（v1.7.0 统一审核流）：posts.status === 'auditing' 的帖子。
+   旧的 fetchAdminReports（举报审查 Tab）与 fetchAdminAuditingPosts（内容审核 Tab）已合并：
+   后台只保留一张待办清单，举报次数变成卡片上的一个标签（auditReason）。*/
+async function fetchAdminAuditQueue() {
   await ensureInit();
-  const result = await callAdminFunction({ action: 'getReports' });
+  const result = await callAdminFunction({ action: 'getAuditQueue' });
   return {
     total: Number(result.total) || 0,
     list: Array.isArray(result.list) ? result.list : []
   };
-}
-
-/**
- * 处理一条举报
- * @param {'ignore'|'violate'} action ignore = 忽略（权重 -1）/ violate = 确认违规（权重 +2 + 警告）
- */
-async function adminHandleReport(action, input) {
-  if (action !== 'ignore' && action !== 'violate') {
-    const err = new Error('未知的处罚动作');
-    err.code = 'ACTION_INVALID';
-    throw err;
-  }
-
-  const reportId = (input && input.reportId) || '';
-  const postId = (input && input.postId) || '';
-  if (!reportId) {
-    const err = new Error('缺少举报记录 ID');
-    err.code = 'REPORT_ID_REQUIRED';
-    throw err;
-  }
-
-  await ensureInit();
-  const result = await callAdminFunction({
-    action: action,
-    reportId: reportId,
-    postId: postId
-  });
-
-  // 帖子状态 / 权重已经变了，顺手刷一次帖子缓存（失败不影响后台操作结果）
-  try {
-    await pullPosts();
-  } catch (err) {
-    console.warn('[store] 后台操作后刷新帖子缓存失败：', err);
-  }
-
-  return result;
 }
 
 // 按学号查绑定者（可能是多条：历史脏数据，后台逐条展示）
@@ -1509,6 +1505,93 @@ async function adminUnbind(targetOpenid) {
 
   await ensureInit();
   return callAdminFunction({ action: 'unbind', targetOpenid: openid });
+}
+
+/**
+ * 审核通过（v1.7.0）：帖子直接上线（status = 'active'），
+ * 该帖名下所有 pending 举报一并结案（resolved），并给作者投一条站内通知
+ * @param {string} postId
+ * @param {string} [reportId] 队列里展示的那条举报（可空：首帖审核没有举报记录）
+ */
+async function adminApprovePost(postId, reportId) {
+  const id = String(postId || '').trim();
+  if (!id) {
+    const err = new Error('缺少帖子信息');
+    err.code = 'POST_ID_REQUIRED';
+    throw err;
+  }
+
+  await ensureInit();
+  const result = await callAdminFunction({
+    action: 'approve',
+    postId: id,
+    reportId: String(reportId || '').trim()
+  });
+  // 本地缓存同步：帖子已上线，大厅下一次 onShow 会重新拉，这里只做体验层即时更新
+  const cached = cache.posts.find(function (item) { return item.id === id; });
+  if (cached) cached.status = 'active';
+  return result;
+}
+
+/**
+ * 审核下架（v1.7.0）：帖子进 deleted（大厅与往期历史都不展示），
+ * 发帖人 warningCount +1（满 WARNING_BAN_THRESHOLD 自动封禁），举报结案，并通知作者原因
+ * @param {string} postId
+ * @param {string} [reportId] 队列里展示的那条举报（可空）
+ * @param {string} reason 下架原因（ActionSheet 选的用户可读文案，会写进站内通知）
+ */
+async function adminRejectPost(postId, reportId, reason) {
+  const id = String(postId || '').trim();
+  if (!id) {
+    const err = new Error('缺少帖子信息');
+    err.code = 'POST_ID_REQUIRED';
+    throw err;
+  }
+
+  await ensureInit();
+  return callAdminFunction({
+    action: 'reject',
+    postId: id,
+    reportId: String(reportId || '').trim(),
+    reason: String(reason || '').trim()
+  });
+}
+
+/**
+ * 给目标用户记一次违规警告（满 WARNING_BAN_THRESHOLD 次自动 banned）
+ * @param {string} targetOpenid
+ */
+async function adminAddWarning(targetOpenid) {
+  const openid = String(targetOpenid || '').trim();
+  if (!openid) {
+    const err = new Error('缺少目标用户');
+    err.code = 'TARGET_REQUIRED';
+    throw err;
+  }
+
+  await ensureInit();
+  return callAdminFunction({ action: 'addWarning', targetOpenid: openid });
+}
+
+/**
+ * 封禁账号：role = 'banned' + 写 blacklist（只记 openid + 原因）
+ * @param {string} targetOpenid
+ * @param {string} reason 封禁原因（写入黑名单与站内通知）
+ */
+async function adminBanUser(targetOpenid, reason) {
+  const openid = String(targetOpenid || '').trim();
+  if (!openid) {
+    const err = new Error('缺少目标用户');
+    err.code = 'TARGET_REQUIRED';
+    throw err;
+  }
+
+  await ensureInit();
+  return callAdminFunction({
+    action: 'banUser',
+    targetOpenid: openid,
+    reason: String(reason || '').trim()
+  });
 }
 
 /**
@@ -1627,7 +1710,8 @@ module.exports = {
   syncProfile,
   getNickname,
   isProfileReady,
-  isRealNameBound,
+  isCampusBound,
+  deleteAccount,
   submitReport,
 
   // 消息中心（云函数 message）
@@ -1657,10 +1741,15 @@ module.exports = {
   isAdmin,
   // 受罚者（role === 'banned'）：入口拦截用
   isBanned,
-  fetchAdminReports,
-  adminHandleReport,
+  // v1.7.0 统一审核流：一个待办队列 + 两个动作（通过 / 下架）
+  fetchAdminAuditQueue,
+  adminApprovePost,
+  adminRejectPost,
+  // 学号申诉（精确搜索 / 记警告 / 封禁 / 强制解绑）
   adminSearchUser,
   adminUnbind,
+  adminAddWarning,
+  adminBanUser,
   adminPublishAnnouncement,
 
   // auth

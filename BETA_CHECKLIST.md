@@ -1,9 +1,9 @@
 # 寻呼 XunHu —— 内测上线准备清单
 
 > 面向：开发者本人（发体验版给同学之前逐项打勾）
-> 依据：当前代码架构（微信原生小程序 + 微信云开发：**10 个云函数 / 6 个集合**）
-> 对应版本：**v1.3.0**（全局改名「寻呼校园」+ 角色底座 role + 申请流转云函数化 + 管理后台）
-> 最后更新：v1.3.0 架构核对（云函数 9 → 10、集合 5 → 6）
+> 依据：当前代码架构（微信原生小程序 + 微信云开发：**12 个云函数 / 10 个集合**）
+> 对应版本：**v1.7.0**（统一审核流：后台三 Tab 待办清单 + approve / reject 合并）
+> 最后更新：v1.7.0 架构核对（云函数 10 → 12、集合 6 → 10；补 messages / announcements / blacklist 权限）
 
 ---
 
@@ -26,95 +26,90 @@
 - [ ] 确认当前开发者工具登录的微信号，和这个云环境所属的小程序账号是同一个
       （`project.config.json` 的 appid：`wx396613abc687f7d5`）
 
-### 1.2 云函数部署（10 个，逐个确认）
+### 1.2 云函数部署（12 个，逐个确认）
 
 在开发者工具左侧 `cloudfunctions/` 下，对每个目录右键 →「上传并部署：云端安装依赖」：
 
-- [ ] `login` —— 下发 openid（一切身份的前提）
-- [ ] `user` —— 读写 users 集合（昵称/学号/简历/联系方式）+ 资料违禁词拦截
-- [ ] `initDb` —— 建集合 + 自检
+- [ ] `login` —— 下发 openid（一切身份的前提），先查 blacklist 拦截注销 / 封禁账号
+- [ ] `user` —— 读写 users 集合（昵称/学号/简历/联系方式）+ 资料违禁词拦截 + 注销账号
+- [ ] `initDb` —— 建集合 + 自检（现在建 **10** 个集合）
 - [ ] `heat` —— 热度原子自增
 - [ ] `publish` —— **风控主防线**：本地违禁词 + 净化匹配 + 一人一帖查重 + 服务端定 status/authorOpenid
-- [ ] `report` —— 举报写库 + 帖子转 auditing
+- [ ] `report` —— 举报写库 + 帖子转 auditing + 自动审查 / 自动警告
 - [ ] `review` —— 双向评价**只写不改**（同帖同人唯一，查重后只 add）+ 关系校验 + 禁自评 + 评价正文违禁词
 - [ ] `getAuthorProfile` —— 详情页「发布者名片」，一次返回 users 简历 + reviews 匿名统计
 - [ ] `application` —— 申请流水唯一入口（apply / updateStatus / list），
-      服务端校验 `receiverId === openid` 防越权，并联查 users 下发申请人昵称 / 简历 / 附言
-- [ ] `admin` —— **管理后台（v1.3.0 新增，必部署）**：getReports / ignore / violate / searchUser / unbind，
-      每个 action 先校验 `users.role === 'admin'`，忽略·违规·解绑都写 `admin_logs`
+      服务端校验 `receiverId === openid` 防越权，联查 users 下发申请人昵称 / 简历 / 附言
+- [ ] `post` —— 帖子状态唯写入口（end / delete / contact / migrateContacts），服务端校 `authorOpenid`
+- [ ] `message` —— 消息中心读入口（list / read / badge），只下发属于本人的通知与公告
+- [ ] `admin` —— **管理后台（v1.7.0 统一审核流，必部署）**：getAuditQueue / approve / reject /
+      searchUser / addWarning / banUser / unbind / publishAnnouncement；
+      每个 action 先校验 `users.role === 'admin'`，审核与处罚都写 `admin_logs`
 
-**本次收尾必须重新部署的三个（v1.1.0 角色底座）：**
+**本次（v1.7.0 统一审核流）必须重新部署的就一个：`admin`。**
+
+- [ ] `admin`：`getReports` + `getAuditingPosts` 合并为 `getAuditQueue`；`ignore` + `violate` +
+      `approvePost` + `deletePost` 合并为 `approve` / `reject`。
+      **不部署 = 后台页面打开就是空的（旧 action 会回 `ACTION_DEPRECATED`）。**
+- [ ] 部署后自测：把一条帖子在控制台改成 `status: 'auditing'` → 重新进后台，
+      卡片顶部应出现 auditReason 标签（被用户举报(X次) / 违规用户发布 / 新用户首帖）
+- [ ] 部署后自测【通过】：帖子状态变 `active`，该帖子名下 `reports.status` 全部变 `resolved`，
+      作者在消息中心收到「内容审核已通过」
+- [ ] 部署后自测【下架】：帖子状态变 `deleted`，`users.warningCount` +1（满 3 变 `banned`），
+      `reports.status` 全部变 `resolved`，作者收到含「原因 + 当前警告次数」的通知
+
+**历史版本收尾项（如果之前没部署过，一并补）：**
 
 - [ ] `user`：新建用户写 `role: 'user'`；客户端传 `role` 一律丢弃，更新时以库里旧值为准
-      （自测：保存资料后看 `users` 文档，`role` 应为 `user`；改包传 `role:'admin'` 无效）
 - [ ] `publish`：写入前查 `users.role`，`banned` 直接返回「您的账号因违规已被限制使用」
-- [ ] `review`：`submit` 前同样查 `role`，`banned` 一律拒绝写入
-      （自测：控制台把测试账号的 `users.role` 改成 `banned`，它发帖 / 评价均应被拦；改回 `user` 后立即恢复）
+- [ ] `review`：`submit` 前同样查 `role`，`banned` 一律拒绝写入；`DEV_ALLOW_SELF_REVIEW` 必须为 `false`
+- [ ] `user`：资料（昵称 / 简历 / 联系方式）违禁词拦截（CONTENT_RISKY）
 
-**另外这两个不能漏：**
-
-- [ ] `review`：`DEV_ALLOW_SELF_REVIEW` 已确认为 `false`（本地代码已确认），
-      **但只有重新部署这条才在云端生效**。不部署 = 任何人可以给自己刷好评。
-      部署后自测：给自己的帖子评价一次，应提示「不能评价自己」。
-- [ ] `publish`：一人一帖查重 + 词库校验的最新版本。
-      部署后自测：已有「寻呼中」帖子时再发布，应被拦回「您已有一条寻呼中的信息…」。
-- [ ] `user`：资料（昵称 / 简历 / 联系方式）违禁词拦截（CONTENT_RISKY）。
-      部署后自测：在「我的」把简历写成 `代 课` 保存 —— 应被拦并提示「包含违规词汇【代课】，请修改后重试」，
-      `users` 集合里不能落库。
-
-- [ ] 在控制台「云函数 → 函数列表」核对以上 10 个函数的**更新时间**都是今天
+- [ ] 在控制台「云函数 → 函数列表」核对以上 **12** 个函数的**更新时间**都是今天
 - [ ] 建议把 `publish` 的**超时时间调到 10 秒**（函数配置 → 超时时间）：
       它要调微信 msgSecCheck，默认 3 秒在弱网下有超时风险
 
 ### 1.3 集合创建（客户端建不了集合，只能靠 initDb）
 
 - [ ] 控制台「云函数 → initDb → 测试」直接运行（入参 `{}`），
-      期望返回 `created` 含 6 个集合，或 `existed` 说明都已存在
+      期望返回 `created` 含 **10** 个集合，或 `existed` 说明都已存在
 - [ ] 再跑一次自检：入参 `{"diagnose": true}`
-      期望：`posts / applications / users / reports / reviews / admin_logs` 全部 `exists: true`，
-      并以此确认它们就在 `CLOUD_ENV` 指向的那个环境里
+      期望：`posts / post_contacts / applications / users / reviews / reports / admin_logs / messages / announcements / blacklist`
+      全部 `exists: true`，并以此确认它们就在 `CLOUD_ENV` 指向的那个环境里
 
-### 1.4 数据库权限（6 个集合，逐个人工核对；这一项错一个就报 -502003）
+### 1.4 数据库权限（10 个集合，逐个人工核对；这一项错一个就报 -502003）
 
 | 集合 | 权限设置 | 原因 |
 |---|---|---|
-| `posts` | **所有用户不可读写** | v1.5.0 起连读也收紧：列表走 `post` 云函数 `action:'list'`，单条走 `'get'`，结束 / 删除走 `'end'` / `'delete'`。客户端不再拥有任何数据库权限 |
-| `applications` | **自定义安全规则**（见下，write 必须为 false） | 读写全部走 `application` 云函数；read 规则只为云函数未部署时降级兑底 |
+| `posts` | **所有用户不可读写** | 连读也收紧：列表走 `post` 云函数 `action:'list'`，单条走 `'get'`，结束 / 删除走 `'end'` / `'delete'`。客户端不再拥有任何数据库权限 |
+| `post_contacts` | **所有用户不可读写** | 联系方式单独存放（v1.3.0 从 posts 拆出），只由 `publish` 写、`post.contact` 按关系下发 |
+| `applications` | **所有用户不可读写** | 读写全部走 `application` 云函数，不再保留自定义 read 规则 |
 | `users` | **所有用户不可读写** | 只走 `user` 云函数，防止扒全站学号 |
-| `reports` | **所有用户不可读写** | 只走 `report` 云函数 |
+| `reports` | **所有用户不可读写** | 只走 `report` 云函数写入（举报人 openid 不可泄露）；后台由 `admin` 读取或结案 |
 | `reviews` | **所有用户不可读写** | 只走 `review` 云函数，评价人 openid 不可泄露 |
 | `admin_logs` | **所有用户不可读写** | 只走 `admin` 云函数写入，后台操作审计不外泄 |
+| `messages` | **所有用户不可读写** | 个人通知：读走 `message` 云函数（只下发本人的），写只发生在 `admin`（处罚 / 审核结果通知）与 `application`（申请流转通知） |
+| `announcements` | **所有用户不可读写** | 全体公告：写入仅 `admin`，读取仅 `message`；客户端零权限，避免被篡改或伪造官方公告 |
+| `blacklist` | **所有用户不可读写** | 只存 openid + 原因（不存任何资料），写入仅 `user.deleteAccount` / `admin.banUser`；`login` / `user` / `publish` / `application` 只做只读校验 |
 
-`applications` 自定义安全规则（**v1.3.0 起 write 必须为 false**）：
+> **`applications` 以前的自定义安全规则（read: doc._openid / receiverId）已废弃**：
+> 任务页列表现在全部走 `application` 云函数，降级直读通道已删除。
+> 如果你的控制台里还留着旧规则，请直接改成「所有用户不可读写」——
+> 否则客户端能无条件拉到别人的申请记录（申请人、附言、简历）。
 
-```json
-{
-  "read": "doc._openid == auth.openid || doc.receiverId == auth.openid",
-  "write": false
-}
-```
-
-> 为什么 write 必须关：申请与「同意 / 拒绕」现在全部走 `application` 云函数（服务端 SDK 不受安全规则限制）。
-> 如果继续放开 write，申请人能在改包环境里把自己的申请 `status` 直接改成 `accepted`，
-> 绕过发帖人白拿对方联系方式 —— 这是上一版遗留的越权漏洞。
-> **read 保留**：只是为了「application 云函数没部署」时任务页还能降级直读（看不到附言 / 简历）。
-
-> 为什么必须带 `where`：这套规则下客户端**无条件查询会被拒**。云函数未部署时的降级直读已经拆成
-> `{_openid: openid}` 与 `{receiverId: openid}` 两次查询合并，不要改回全量 get。
-
-- [ ] **新增云函数 `application` 已上传并部署**（云端安装依赖）：
-      申请 / 同意 / 拒绝 / 任务页列表全部靠它。不部署 = 任务页只能降级直读，
-      看不到申请附言与申请人简历，同意 / 拒绝也会直接报错
+- [ ] **云函数 `application` 已上传并部署**（云端安装依赖）：
+      申请 / 同意 / 拒绝 / 任务页列表全部靠它。不部署 = 任务页列表直接报错
+      （降级直读通道已删除，不再有“看不到附言但能看列表”的中间态）
 - [ ] 部署后自测云函数日志：点「同意」时控制台应出现
       `[application][updateStatus] openid=... applicationId=... status=accepted`，
       紧接一条 `成功 id=... -> accepted 申请人=...`
 
-- [ ] 6 个集合的权限已按上表逐项保存（每改一个都要点保存，容易漏）
+- [ ] **10** 个集合的权限已按上表逐项保存（每改一个都要点保存，容易漏）
 - [ ] `users` 字段核对：每条文档应有 `role` 字段（`user` / `banned` / `admin`）；
       老文档没有的，下次保存资料时会自动补 `user`（顺手在控制台扫一眼即可）
-- [ ] **封禁操作流程（目前无后台，只能手动）**：控制台 → 数据库 → `users` →
-      找到该用户 → 把 `role` 改成 `banned` → 保存。立即生效，无需重启小程序；
-      解封改回 `user` 即可。**切勿在前端加「改 role」的入口**
+- [ ] **封禁 / 解封仍建议在控制台做最终确认**：后台「学号申诉」Tab 已有【记警告】【封禁】入口，
+      本质是改 `users.role` + 写 `blacklist`；人工解封时控制台把 `role` 改回 `user`，
+      并顺手把 `warningCount` 清零（否则解封后一次违规立即再被封）。**切勿在前端加「改 role」的入口**
 - [ ] 抽查 `reports` / `reviews`：设成「所有用户不可读写」后，
       在小程序里举报/评价仍然正常（因为走云函数），说明规则没配反
 
@@ -128,7 +123,9 @@
 - [ ] `reviews`：删除自测产生的评价（否则好评率一开始就是脏的）
 - [ ] `reports`：清空测试举报记录
 - [ ] `admin_logs`：清空测试期后台操作记录（可选，审计日志留空更干净）
-- [ ] 清理前先「导出 JSON」备份这 6 个集合，出事能回滚
+- [ ] 清理前先「导出 JSON」备份这 **10** 个集合，出事能回滚
+- [ ] `messages` / `announcements`：清空测试期发的通知与公告（否则新用户一进来就看到测试内容）
+- [ ] `blacklist`：确认只剩真正要拦的 openid（自测注销 / 封禁留下的记录要清）
 
 ---
 
@@ -178,6 +175,12 @@
 - [ ] 同一帖子同意了 B、C 两个申请 → 结束后可**分别**评价 B 和 C（评完 B 后 C 的按钮仍是「评价对方」，互不影响）
 - [ ] 个人页：收到的评价匿名显示「某同学」，不足 3 条显示「满意度统计中...」
 - [ ] 举报别人的帖子 → 大厅该卡片打码、点不进详情
+- [ ] 管理后台（仅管理员可见，入口在「我的」）：
+      【内容审核】队列不为空时，卡片顶部有 auditReason 标签（被举报 / 违规用户发布 / 新用户首帖，
+      多条件逗号拼接、颜色不同）；点【下架（选原因）】会弹原因选择，选完后帖子从大厅消失、
+      作者消息中心收到「原因 + 当前警告次数」的通知；点【通过】后帖子立即出现在大厅
+- [ ] 后台【学号申诉】搜一个已绑定学号 → 卡片显示脱敏学号（31****1234）与警告次数，
+      【强制解绑】前有二次确认（不展示任何联系方式）
 - [ ] 控制台 Console 干净：**不应出现 `[task][DEV]` 开头的日志**
 - [ ] 安全规则验证：小号尝试改大号的帖子（可临时写个测试按钮或看报错），应被拒
 
@@ -213,7 +216,9 @@
    大厅帖子快照存 `Storage: cache_posts`，我的申请快照存 `cache_applications`（退出登录即清）。
    两份快照只在 onShow 首帧用，任何一次云端拉取成功都会覆盖；
    若发现「页面数据看着不对」，先下拉刷新 / 清缓存，再看控制台。
-8. **管理后台只覆盖举报审查与学号申诉**：封禁 / 解封用户仍要手动去控制台改 `users.role`。
+8. **管理后台 = 三个 Tab 的待办清单**：【内容审核】/【学号申诉】/【系统公告】。
+   举报审查已合并进【内容审核】（auditReason 标签里体现举报次数），后台不再有独立的举报列表；
+   封禁 / 解封的最终手段仍是控制台改 `users.role`（后台的【封禁】是同一个写法的包装）。
    后台入口在「我的」（仅 `role === 'admin'` 可见），真正的权限校验在 `admin` 云函数。
 9. **任务页冷启动仍有一处小延迟**：`onShow` 的 `ready` 依赖云端拉回的资料，
    冷启动直接点进任务页且 profile 尚未就绪时，会先看到「资料未完善」（切一下 Tab 即恢复）。

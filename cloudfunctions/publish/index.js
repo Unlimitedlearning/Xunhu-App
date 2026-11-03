@@ -1,12 +1,15 @@
 // cloudfunctions/publish/index.js
-// 作用：发布帖子的唯一写入口 —— 写入数据库前先过「本地严格防御」（可再叠微信机审），通过后直接上线（status = 'active'）。
+// 作用：发布帖子的唯一写入口 —— 写入数据库前先过「本地严格防御」（可再叠微信机审），
+//       通过后按风控策略决定 status：老用户 + 信用良好 -> 'active'（直接上线）；
+//       首帖 或 有违规记录 -> 'auditing'（进后台「内容审核」人工复核）。
 //
 // 风控体系（个人主体拿不到机审权限 48001，所以本地词库才是主防线）：
 //   第一层 前端轻量拦截：pages/publish 用同一份词库 + 同一套净化匹配，体验上即时提示
 //   第二层 云端绝对防线（这里）：写入前重新拼全文（title + content + tags + contact）再校一遍，
 //          客户端改包、直接调云函数都绕不过；文案统一「发布失败：包含违规词汇【xxx】，请修改后重试。」
 //   第三层 微信机审 msgSecCheck（能调就调，失败降级放行，见 SEC_CHECK_FAIL_OPEN）
-//   第四层 上线后被举报 -> report 云函数把 status 改回 'auditing'（大厅打码、不可点入）
+//   第四层 首帖 / 有前科强制人工复核（v1.6.0）：warningCount > 0 或历史发帖数 < 1 -> auditing
+//   第五层 上线后被举报 -> report 云函数把 status 改回 'auditing'（大厅打码、不可点入）
 //
 // 净化匹配（两处同实现，改一处必须同步另一处）：小写 + 全角转半角 + 删零宽字符 + 删全部空白标点
 //   + 拼音兜底词库，拆字（代 课）/ 插标点（代*考）/ 拼音（dai ke）都会被拦。
@@ -18,7 +21,7 @@
 //
 // 调用方式（小程序端）：store.savePost(...) 内部已封装
 //   { category, title, content, tags, contact }
-//   返回 { ok: true, id, status: 'active', authorName, secChecked, suggest }
+//   返回 { ok: true, id, status: 'active' | 'auditing', authorName, secChecked, suggest }
 //   一人一帖命中返回 { ok: false, code: 'ALREADY_HAS_ACTIVE', message, postId }
 
 const cloud = require('wx-server-sdk');
@@ -95,9 +98,14 @@ const CLEAN_TEXT_REGEX = (function () {
 
 const STUDENT_ID_REGEX = /^31\d{8}$/;
 
-// 真实姓名：2-4 个纯中文汉字（与 utils/constants.js、cloudfunctions/user 同值）
-// 只做格式校验，不做实名核验；不写入任何公开集合。
-const REAL_NAME_REGEX = /^[\u4e00-\u9fa5]{2,4}$/;
+/* 校区（v1.6.0）
+ * 取值域与 utils/constants.js 的 CAMPUS_LIST 同值：改一处必须同步另一处。
+ * 发布前校验它，是因为 authorName 来自 users，而「资料完备」的门槛现在由昵称 + 校区 + 学号 + 联系方式组成。
+ */
+const CAMPUS_LIST = ['揭阳', '大学城', '东风路', '龙洞', '番禺', '沙河'];
+
+// 黑名单集合（v1.6.0）：注销 / 封禁账号一律拒发布
+const BLACKLIST = 'blacklist';
 
 const MAX_TITLE = 15;
 const MAX_CONTENT = 500;
@@ -127,6 +135,8 @@ function localRiskyMessage(word) {
 const ACTIVE_LIMIT_MESSAGE = '您已有寻呼中或审查中的信息，请先结束后再发布新信息。';
 // 账号被封禁（users.role === 'banned'）时的统一文案，与 cloudfunctions/review 同值
 const BANNED_MESSAGE = '您的账号因违规已被限制使用';
+// 黑名单（注销 / 封禁）统一拦截文案
+const BLACKLIST_MESSAGE = '该账号已注销或已被限制使用，如有疑问请联系管理员邮箱：xunhu_app@qq.com';
 
 function errCodeOf(err) {
   return String((err && (err.errCode || err.code)) || '');
@@ -136,6 +146,24 @@ function isMissingCollection(err) {
   const code = errCodeOf(err);
   const message = String((err && err.message) || '');
   return code === '-502005' || message.indexOf('not exist') > -1;
+}
+
+/* ---------------- 黑名单（v1.6.0） ----------------
+ * 注销 / 封禁后不允许再发布或重新建档。
+ * 查询失败按「未命中」处理（fail-open）：users 记录已删、role 已写，
+ * 黑名单只是第二道锁，不应该因为集合没建就把正常用户拦在外面。
+ */
+async function isBlacklisted(db, openid) {
+  const value = String(openid || '').trim();
+  if (!value) return false;
+  try {
+    const res = await db.collection(BLACKLIST).where({ openid: value }).limit(1).get();
+    return !!((res && res.data) || []).length;
+  } catch (err) {
+    if (isMissingCollection(err)) return false;
+    console.warn('[publish] blacklist 查询失败，按未命中处理：', err && err.message);
+    return false;
+  }
 }
 
 /**
@@ -355,10 +383,16 @@ exports.main = async (event) => {
 
   const db = cloud.database();
 
-  // 2. 身份：必须已完善资料（昵称 + 学号 + 联系方式都在 users 里）
+  // 2. 身份：必须已完善资料（昵称 + 校区 + 学号 + 联系方式都在 users 里）
   const profile = await loadProfile(db, openid);
 
-  // 2.1 账号状态（v1.1.0 角色底座）最优先：被封禁的用户什么都不能写。
+  // 2.1 黑名单（v1.6.0）：已注销 / 被封禁的账号在入口直接拒
+  if (await isBlacklisted(db, openid)) {
+    console.log('[publish] 命中黑名单，拦截发布：', openid);
+    return { ok: false, code: 'ACCOUNT_BLOCKED', message: BLACKLIST_MESSAGE };
+  }
+
+  // 2.2 账号状态（v1.1.0 角色底座）：被封禁的用户什么都不能写。
   //     role 由服务端/控制台维护（cloudfunctions/user 不允许客户端写 role），改包也绕不过。
   if (String((profile && profile.role) || 'user').toLowerCase() === 'banned') {
     console.log('[publish] 账号已被封禁，拦截发布：', openid);
@@ -368,9 +402,9 @@ exports.main = async (event) => {
   if (!profile || !String(profile.nickname || '').trim()) {
     return { ok: false, code: 'PROFILE_NOT_READY', message: '请先在「我的」页面完善资料后再发布' };
   }
-  // 【v1.4.0】真实姓名是发布硬门槛：老用户没填的也会被拦在这里（前端 guard 同时拦一道）
-  if (!REAL_NAME_REGEX.test(String(profile.realName || '').trim())) {
-    return { ok: false, code: 'PROFILE_NOT_READY', message: '请先在「我的」页面填写真实姓名后再发布' };
+  // 【v1.6.0】校区是发布硬门槛：只能是从固定选项里选的那一个值
+  if (CAMPUS_LIST.indexOf(String(profile.campus || '').trim()) === -1) {
+    return { ok: false, code: 'PROFILE_NOT_READY', message: '请先在「我的」页面选择所在校区后再发布' };
   }
   if (!STUDENT_ID_REGEX.test(String(profile.studentId || '').trim())) {
     return { ok: false, code: 'PROFILE_NOT_READY', message: '请先在「我的」页面绑定广工 10 位学号后再发布' };
@@ -415,6 +449,39 @@ exports.main = async (event) => {
     }
   }
 
+  // 3.1 【v1.6.0 首帖审核策略】发帖前查 users.warningCount 与历史发帖数：
+  //   · warningCount > 0（有过违规记录）  -> 强制进入人工复核（auditing）
+  //   · 历史发帖数 < 1（首帖，新账号）-> 强制进入人工复核（auditing）
+  //   · 其余（老用户 + 信用良好）-> 直接上线（active）
+  // 为什么这么设计：审核员要能真实看到违规内容（而不是只能看到被举报的），
+  //   同时又不能把所有正常用户都卡在人工队列里；新号首帖 + 有前科的号就是成本最低的抽查点。
+  // 【统计口径】只算 active / auditing / ended：「已违规下架（deleted）」不算历史发帖，
+  //   否则被下架过的人反而能跳过首帖复核。
+  const warningCount = Number(profile.warningCount) || 0;
+  let historyCount = 0;
+  try {
+    const _count = db.command;
+    const historyRes = await db.collection(POSTS)
+      .where({ authorOpenid: openid, status: _count.in(['active', 'auditing', 'ended']) })
+      .count();
+    historyCount = Number(historyRes && historyRes.total) || 0;
+  } catch (err) {
+    if (!isMissingCollection(err)) {
+      // 查不到历史帖子数时宁可进人工复核：不能被「查询失败」绕过首帖审核
+      console.warn('[publish] 历史发帖数查询失败，按首帖（需审核）处理：', err && err.message);
+      historyCount = 0;
+    }
+  }
+
+  const needAudit = warningCount > 0 || historyCount < 1;
+  const auditReason = warningCount > 0
+    ? '账号存在违规记录，需人工复核'
+    : '首帖审核';
+  console.log('[publish] 审核判定 openid=' + openid +
+    ' warningCount=' + warningCount +
+    ' historyCount=' + historyCount +
+    ' needAudit=' + needAudit);
+
   // 4. 本地违禁词（绝对防线）：标题 + 描述 + 标签 + 联系方式 合并成全文，做「净化匹配」
   //    净化 = 小写 + 删空白 + 删全部标点 + 删零宽字符 + 拼音兜底，拆字/插标点/换拼音都躲不过
   //    联系方式也参与本地匹配（与前端一致），但不送 msgSecCheck（微信号/手机号易被误判成广告）
@@ -451,7 +518,7 @@ exports.main = async (event) => {
     };
   }
 
-  // 6. 全部校验通过 -> 直接上线
+  // 6. 全部校验通过 -> 上线或进人工复核（v1.6.0：首帖 / 有前科的号不再自动上线）
   const now = Date.now();
   const doc = {
     // 显式写 _openid：历史规则与控制台排查都靠它认主（服务端写入，客户端伪造不了）
@@ -462,9 +529,11 @@ exports.main = async (event) => {
     tags: tags,
     authorOpenid: openid,
     authorName: authorName,
+    // 帖子展示用的校区（非敏感）：详情页 / 后台审核需要知道发帖人属于哪个校区
+    authorCampus: String(profile.campus || ''),
     // 【P0-2】contact 不写这里：posts 对所有用户可读，写在这就是全站隐私泄露。
     // 联系方式落 post_contacts（_id = postId，客户端零权限），见下方 saveContact()
-    status: 'active', // 机审通过即上线（进行中）
+    status: needAudit ? 'auditing' : 'active', // 首帖 / 有前科 -> 人工复核；其余机审 + 词库通过即上线
     heat: 0,
     reportWeight: 0, // 举报权重（v1.2.0 风控）：新帖子从 0 开始，每条新举报 +1
     createTime: now,
@@ -475,7 +544,11 @@ exports.main = async (event) => {
       degraded: !!secCheckResult.degraded,
       errCode: secCheckResult.errCode || '',
       checkTime: now
-    }
+    },
+    // 留痕：为什么进人工复核（后台「内容审核」Tab 直接展示这一句）
+    auditReason: needAudit ? auditReason : '',
+    auditSource: needAudit ? (warningCount > 0 ? 'warning-count' : 'first-post') : '',
+    auditTime: needAudit ? now : 0
   };
 
   try {

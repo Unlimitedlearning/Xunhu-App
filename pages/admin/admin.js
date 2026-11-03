@@ -1,22 +1,40 @@
 // pages/admin/admin.js
-// 管理后台（v1.2.0）：举报审查 + 学号申诉。
+// 管理后台（v1.7.0：统一审核流 —— 后台就是一张「待办清单」）。
+//
+// 【三个 Tab = 三类待办】
+//   【内容审核】posts.status === 'auditing' 的帖子。卡片顶部直接给 auditReason 标签
+//               （被用户举报(X次) / 违规用户发布 / 新用户首帖，多条件逗号拼接，按类型分色），
+//               底部只有两个按钮：【通过】与【下架（选原因）】。
+//   【学号申诉】按学号精确搜索 → 记警告 / 封禁 / 强制解绑。
+//   【系统公告】发布全体公告（写 announcements，所有用户消息中心可见）。
 //
 // 【为什么所有数据都走云函数】
-//   reports 与 users 两个集合权限是「所有用户不可读写」，客户端直接 get 必然 -502003。
-//   所以列表 / 搜索 / 处罚全部调用 cloudfunctions/admin（action: getReports / ignore /
-//   violate / searchUser / unbind），前端只负责渲染。
-//   前端这里的「是不是管理员」只是体验层：改包把页面调出来，云函数第一行也会回 FORBIDDEN。
+//   posts / reports / users 三个集合对客户端「所有用户不可读写」，
+//   所以列表、搜索、处罚全部调用 cloudfunctions/admin（action: getAuditQueue / approve / reject / searchUser ...），
+//   前端只负责渲染。页面里的「是不是管理员」只是体验层：改包把页面调出来，云函数第一行也会回 FORBIDDEN。
 //
 // 交互约定：
-//   · 进页面 / 下拉刷新 -> getReports
-//   · Tab 切换纯内存（不请求），避免无意义调用
-//   · 忽略 / 确认违规 / 强制解绑 都是破坏性操作，一律二次确认
+//   · 进页面 / 下拉刷新 -> getAuditQueue；Tab 切换纯内存，只有没加载过的 Tab 才打一次接口
+//   · 【通过】：二次确认 -> action 'approve'（帖子恢复上线 + 该帖举报全部结案 + 通知作者）
+//   · 【下架】：先 ActionSheet 选原因 -> 再二次确认 -> action 'reject'（下架 + 警告 +1 + 通知作者）
+//   · 记警告 / 封禁 / 强制解绑 都是破坏性操作，一律二次确认
 
 const store = require('../../utils/store');
 const constants = require('../../utils/constants');
 
-const POST_STATUS_MAP = constants.POST_STATUS_MAP;
 const ROLE_MAP = constants.ROLE_MAP;
+const CATEGORY_MAP = constants.CATEGORY_MAP;
+const WARNING_BAN_THRESHOLD = constants.WARNING_BAN_THRESHOLD;
+
+// 下架原因选项（写进 posts.deleteReason + 站内通知，必须让作者看得懂）
+// 不用输入框：后台是在手机上操作，键盘输入原因很容易漏字或写得太随意
+const AUDIT_REJECT_REASONS = [
+  '含违禁词或违规内容',
+  '广告 / 引流信息',
+  '虚假或误导性信息',
+  '涉及敏感内容',
+  '不符合校园互助定位'
+];
 
 function pad(value) {
   return value < 10 ? '0' + value : '' + value;
@@ -31,21 +49,18 @@ function formatTime(timestamp) {
     ' ' + pad(date.getHours()) + ':' + pad(date.getMinutes());
 }
 
-function postStatusText(status, exists) {
-  if (!exists) return '帖子已删除';
-  return POST_STATUS_MAP[status] || '状态未知';
-}
-
 Page({
   data: {
     tabs: constants.ADMIN_TABS,
-    activeTab: 'reports',
+    // v1.7.0：默认落在「内容审核」—— 后台的第一件事永远是清待审队列
+    activeTab: 'audit',
 
-    // ---- 举报审查 ----
-    reportsLoading: false,
-    reportsLoaded: false,   // 首次加载完成才显示「暂无举报」，避免一闪而过的空状态
-    reports: [],
-    reportsError: '',
+    // ---- 内容审核（待办队列）----
+    auditLoading: false,
+    auditLoaded: false,   // 首次加载完成才显示「队列已清空」，避免一闪而过的空状态
+    auditPosts: [],
+    auditError: '',
+    auditWorkingId: '',   // 正在处理中的帖子 id（按钮置灰，防重复提交）
 
     // ---- 学号申诉 ----
     studentIdInput: '',
@@ -54,7 +69,7 @@ Page({
     users: [],
     userError: '',
 
-    // ---- 发布全体公告（v1.4.0）----
+    // ---- 系统公告 ----
     announceTitle: '',
     announceContent: '',
     announceLoading: false,
@@ -63,19 +78,19 @@ Page({
     announceContentMax: constants.ANNOUNCEMENT_CONTENT_MAX
   },
 
-  // onShow 而不是 onLoad：从详情页改完帖子状态返回时也要最新列表
+  // onShow 而不是 onLoad：从详情页预览回来、或从别的 Tab 切回来时也要最新队列
   onShow: function () {
     this.guardAndLoad();
   },
 
   onPullDownRefresh: async function () {
     try {
-      if (this.data.activeTab === 'reports') {
-        await this.loadReports();
+      if (this.data.activeTab === 'audit') {
+        await this.loadAuditQueue();
       } else if (this.data.activeTab === 'appeal' && (this.data.studentIdInput || '').trim()) {
         await this.searchUser();
       }
-      // 发布公告 Tab 是表单，下拉只清错误提示，不重发上次的内容
+      // 系统公告 Tab 是表单，下拉只清错误提示，不重发上次的内容
       if (this.data.activeTab === 'announce') {
         this.setData({ announceError: '' });
       }
@@ -88,7 +103,8 @@ Page({
    * 进入前确认「已登录 + 是管理员」
    * 直接用深链接 / 编译模式打开本页时内存里可能还没有资料，所以先 syncProfile 一次
    */
-  guardAndLoad: async function () {    if (!store.isLoggedIn()) {
+  guardAndLoad: async function () {
+    if (!store.isLoggedIn()) {
       this.deny('请先登录后再进入管理后台');
       return;
     }
@@ -105,8 +121,8 @@ Page({
       return;
     }
 
-    if (this.data.activeTab === 'reports') {
-      await this.loadReports();
+    if (this.data.activeTab === 'audit') {
+      await this.loadAuditQueue();
     }
   },
 
@@ -130,68 +146,74 @@ Page({
   onTabChange: function (e) {
     const tab = e.currentTarget.dataset.tab;
     if (!tab || tab === this.data.activeTab) return;
-    // 纯内存切换，不发请求（与大厅 Tab 同一约定）
+    // 纯内存切换（与大厅 Tab 同一约定）：只有还没加载过的 Tab 才打一次接口
     this.setData({ activeTab: tab });
+    if (tab === 'audit' && !this.data.auditLoaded) {
+      this.loadAuditQueue();
+    }
   },
 
-  /* ---------------- 举报审查 ---------------- */
+  /* ---------------- 内容审核（唯一待办队列） ---------------- */
 
-  loadReports: async function () {
-    if (this.data.reportsLoading) return;
-    this.setData({ reportsLoading: true, reportsError: '' });
+  /**
+   * 拉取审核队列：status === 'auditing' 的帖子
+   * 进审来源三种：首帖强制审核、有违规记录强制审核、被举报进审查
+   * 云端已批量联查 reports / users 并拼好 auditReason，前端不再自己算原因
+   */
+  loadAuditQueue: async function () {
+    if (this.data.auditLoading) return;
+    this.setData({ auditLoading: true, auditError: '' });
 
     try {
-      const result = await store.fetchAdminReports();
+      const result = await store.fetchAdminAuditQueue();
       const list = result.list.map(function (item) {
-        const exists = item.postExists !== false;
+        const tags = Array.isArray(item.auditTags) ? item.auditTags : [];
         return {
-          reportId: item.reportId || '',
           postId: item.postId || '',
-          title: item.postTitle || '（无标题）',
-          reason: item.reason || '未填写',
-          desc: item.desc || '',
-          // 举报人已由云端脱敏（前 4 + 后 4），仅用于区分「同一人反复举报」
-          reporter: item.reporterOpenid || '',
-          authorName: item.postAuthorName || '',
-          statusText: postStatusText(item.postStatus, exists),
-          isAuditing: item.postStatus === 'auditing',
-          isDeleted: !exists,
-          weight: Number(item.postWeight) || 0,
+          reportId: item.reportId || '',
+          title: item.title || '（无标题）',
+          content: item.content || '',
+          categoryText: CATEGORY_MAP[item.category] || '未分类',
+          tags: Array.isArray(item.tags) ? item.tags : [],
+          authorName: item.authorName || '未设置昵称',
+          // 校区：审核时用来看内容与学生身份是否自洽（非敏感值）
+          authorCampus: item.authorCampus || '',
+          studentIdMasked: item.authorStudentIdMasked || '',
+          warningCount: Number(item.authorWarningCount) || 0,
+          reportCount: Number(item.reportCount) || 0,
+          latestReportReason: item.latestReportReason || '',
+          // auditReason：云端拼好的完整文案（多条件逗号连接），再拆成 tags 分色展示
+          auditReason: item.auditReason || '',
+          auditTags: tags.length ? tags : [{ type: 'other', text: '人工复核' }],
           createTime: formatTime(item.createTime)
         };
       });
 
       this.setData({
-        reports: list,
-        reportsLoading: false,
-        reportsLoaded: true
+        auditPosts: list,
+        auditLoading: false,
+        auditLoaded: true
       });
     } catch (err) {
-      console.error('[admin] 举报列表拉取失败：', err);
+      console.error('[admin] 审核队列拉取失败：', err);
       const message = err && err.code === 'FUNCTION_CALL_FAILED'
         ? 'admin 云函数未部署，请先在开发者工具上传并部署'
-        : ((err && err.message) || '举报列表拉取失败，请下拉重试');
+        : ((err && err.message) || '审核队列拉取失败，请下拉重试');
       this.setData({
-        reportsLoading: false,
-        reportsLoaded: true,
-        reportsError: message
+        auditLoading: false,
+        auditLoaded: true,
+        auditError: message
       });
     }
   },
 
   /**
-   * 点标题查看帖子详情（审核用）
+   * 点标题预览帖子全文
    * 带上 admin=1：详情页原本会拦截「审查中（auditing）」的帖子，
    * 管理员预览通道会先校验云端 role === 'admin' 才放行，且预览模式下不加热度、不显示报名/举报按钮。
    */
   goPostDetail: function (e) {
-    const dataset = e.currentTarget.dataset;
-    const postId = dataset.postId;
-
-    if (dataset.deleted) {
-      wx.showToast({ title: '该帖子已被删除', icon: 'none' });
-      return;
-    }
+    const postId = e.currentTarget.dataset.postId;
     if (!postId) {
       wx.showToast({ title: '缺少帖子信息', icon: 'none' });
       return;
@@ -206,61 +228,111 @@ Page({
     });
   },
 
-  onIgnoreTap: function (e) {
+  // 【通过】= 直接上线（status = 'active'），云端会把该帖的举报一并结案并通知作者
+  onAuditApproveTap: function (e) {
     const dataset = e.currentTarget.dataset;
-    this.handleReport('ignore', dataset.reportId, dataset.postId);
+    this.confirmAuditApprove(dataset.postId, dataset.reportId, dataset.title || '');
   },
 
-  onViolateTap: function (e) {
-    const dataset = e.currentTarget.dataset;
-    this.handleReport('violate', dataset.reportId, dataset.postId);
-  },
-
-  /**
-   * 处理一条举报
-   * @param {string} action 'ignore' | 'violate'
-   */
-  handleReport: function (action, reportId, postId) {
-    if (!reportId) {
-      wx.showToast({ title: '缺少举报记录', icon: 'none' });
+  confirmAuditApprove: function (postId, reportId, title) {
+    if (!postId) {
+      wx.showToast({ title: '缺少帖子信息', icon: 'none' });
       return;
     }
 
     const that = this;
-    const isViolate = action === 'violate';
-
     wx.showModal({
-      title: isViolate ? '确认违规' : '忽略举报',
-      content: isViolate
-        ? '确认后帖子将被下架审查（帖子权重 +2），并给发帖人记一次违规警告；警告满 3 次将自动封禁账号。确定吗？'
-        : '忽略 = 判定该帖子没有违规：帖子权重 -1（最低 0）；若它正因自动审查处于「审核中」，会立刻恢复为「进行中」。确定吗？',
-      confirmText: isViolate ? '确认违规' : '忽略',
-      confirmColor: isViolate ? '#e53935' : '#07c160',
+      title: '审核通过',
+      content: '「' + (title || '该帖子') + '」将立即在大厅展示，并通知发帖人。该帖子名下的待处理举报会一并结案。确定吗？',
+      confirmText: '通过上线',
       success: function (res) {
         if (!res.confirm) return;
-
-        wx.showLoading({ title: '处理中...' });
-        store.adminHandleReport(action, { reportId: reportId, postId: postId })
-          .then(function (result) {
-            wx.hideLoading();
-            // 忽略后帖子可能已被恢复上线，用云端返回值提示，避免管理员误以为没生效
-            const restored = !!(result && result.restored);
-            wx.showToast({
-              title: restored ? '已忽略，帖子已恢复' : '已处理',
-              icon: 'none'
-            });
-            return that.loadReports();
-          })
-          .catch(function (err) {
-            wx.hideLoading();
-            console.error('[admin] 举报处理失败：', err);
-            wx.showToast({
-              title: (err && err.message) || '处理失败，请稍后重试',
-              icon: 'none'
-            });
-          });
+        that.runAuditAction('approve', postId, reportId, '');
       }
     });
+  },
+
+  // 【下架（选原因）】：先选原因，再二次确认，原因是必须给作者看的
+  onAuditRejectTap: function (e) {
+    const dataset = e.currentTarget.dataset;
+    this.chooseRejectReason(dataset.postId, dataset.reportId, dataset.title || '');
+  },
+
+  chooseRejectReason: function (postId, reportId, title) {
+    if (!postId) {
+      wx.showToast({ title: '缺少帖子信息', icon: 'none' });
+      return;
+    }
+
+    const that = this;
+    wx.showActionSheet({
+      itemList: AUDIT_REJECT_REASONS,
+      success: function (res) {
+        const reason = AUDIT_REJECT_REASONS[res.tapIndex] || '';
+        that.confirmAuditReject(postId, reportId, title, reason);
+      },
+      fail: function () {
+        // 取消选择：什么都不做（不弹错误提示，避免误以为是失败）
+      }
+    });
+  },
+
+  confirmAuditReject: function (postId, reportId, title, reason) {
+    const that = this;
+    wx.showModal({
+      title: '确认下架',
+      content: '「' + (title || '该帖子') + '」将以「' + reason + '」为原因下架，并给发帖人记一次违规警告' +
+        '（累计满 ' + WARNING_BAN_THRESHOLD + ' 次自动封禁）。确定吗？',
+      confirmText: '确认下架',
+      confirmColor: '#e53935',
+      success: function (res) {
+        if (!res.confirm) return;
+        that.runAuditAction('reject', postId, reportId, reason);
+      }
+    });
+  },
+
+  /**
+   * 执行审核动作
+   * @param {'approve'|'reject'} action
+   */
+  runAuditAction: async function (action, postId, reportId, reason) {
+    if (this.data.auditWorkingId) return;
+    this.setData({ auditWorkingId: postId });
+
+    wx.showLoading({ title: action === 'approve' ? '通过中...' : '下架中...', mask: true });
+    try {
+      let result = null;
+      if (action === 'approve') {
+        result = await store.adminApprovePost(postId, reportId);
+      } else {
+        result = await store.adminRejectPost(postId, reportId, reason);
+      }
+
+      wx.hideLoading();
+      this.setData({ auditWorkingId: '' });
+
+      // toast 直接说结果，管理员不用猜「警告记上了没有」
+      let toast = '已下架';
+      if (action === 'approve') {
+        toast = '已通过，帖子已上线';
+      } else if (result && result.banned) {
+        toast = '已下架，作者已封禁';
+      } else if (result && result.warningCount) {
+        toast = '已下架，作者警告 ' + result.warningCount + '/' + WARNING_BAN_THRESHOLD;
+      }
+      wx.showToast({ title: toast, icon: 'none' });
+
+      await this.loadAuditQueue();
+    } catch (err) {
+      wx.hideLoading();
+      console.error('[admin] 审核处理失败：', err);
+      this.setData({ auditWorkingId: '' });
+      wx.showToast({
+        title: (err && err.message) || '处理失败，请稍后重试',
+        icon: 'none'
+      });
+    }
   },
 
   /* ---------------- 学号申诉 ---------------- */
@@ -354,7 +426,83 @@ Page({
     });
   },
 
-  /* ---------------- 发布全体公告 ---------------- */
+  /* ---------------- 用户处置：记警告 / 封禁 ---------------- */
+
+  onWarningTap: function (e) {
+    const targetOpenid = e.currentTarget.dataset.openid;
+    if (!targetOpenid) {
+      wx.showToast({ title: '缺少目标用户', icon: 'none' });
+      return;
+    }
+
+    const that = this;
+    wx.showModal({
+      title: '记一次违规警告',
+      content: '该账号将收到一条站内警告通知；累计满 ' + WARNING_BAN_THRESHOLD + ' 次会自动封禁。确定吗？',
+      confirmText: '记警告',
+      confirmColor: '#e53935',
+      success: function (res) {
+        if (!res.confirm) return;
+
+        wx.showLoading({ title: '处理中...' });
+        store.adminAddWarning(targetOpenid)
+          .then(function (result) {
+            wx.hideLoading();
+            const count = Number(result && result.warningCount) || 0;
+            wx.showToast({
+              title: (result && result.banned) ? '已封禁（警告满额）' : ('已记录，当前 ' + count + ' 次'),
+              icon: 'none'
+            });
+            return that.searchUser();
+          })
+          .catch(function (err) {
+            wx.hideLoading();
+            console.error('[admin] 记警告失败：', err);
+            wx.showToast({
+              title: (err && err.message) || '操作失败，请稍后重试',
+              icon: 'none'
+            });
+          });
+      }
+    });
+  },
+
+  onBanTap: function (e) {
+    const targetOpenid = e.currentTarget.dataset.openid;
+    if (!targetOpenid) {
+      wx.showToast({ title: '缺少目标用户', icon: 'none' });
+      return;
+    }
+
+    const that = this;
+    wx.showModal({
+      title: '封禁账号',
+      content: '封禁后该账号无法发布、申请、评价、举报，也不能再登录（openid 会进黑名单）。封禁为不可自助解除，请确认已掌握违规证据。',
+      confirmText: '确认封禁',
+      confirmColor: '#e53935',
+      success: function (res) {
+        if (!res.confirm) return;
+
+        wx.showLoading({ title: '处理中...' });
+        store.adminBanUser(targetOpenid, 'admin_ban')
+          .then(function () {
+            wx.hideLoading();
+            wx.showToast({ title: '已封禁', icon: 'none' });
+            return that.searchUser();
+          })
+          .catch(function (err) {
+            wx.hideLoading();
+            console.error('[admin] 封禁失败：', err);
+            wx.showToast({
+              title: (err && err.message) || '封禁失败，请稍后重试',
+              icon: 'none'
+            });
+          });
+      }
+    });
+  },
+
+  /* ---------------- 系统公告 ---------------- */
 
   onAnnounceTitleInput: function (e) {
     this.setData({ announceTitle: e.detail.value || '' });
@@ -383,7 +531,7 @@ Page({
 
     const that = this;
     wx.showModal({
-      title: '发布全体公告',
+      title: '发布系统公告',
       content: '发布后所有用户都会在「消息中心」看到这条公告，确定发布吗？',
       confirmText: '发布',
       success: function (res) {

@@ -480,6 +480,31 @@ page {
   padding: 24rpx 0;
 }
 
+/* ---------- 注销账号（v1.6.0 合规） ----------
+   与「退出登录」区分开：退出是普通操作（灰），注销是不可逆的删除（红、更小、带下划线）。*/
+.delete-account-btn {
+  margin-top: 4rpx;
+  text-align: center;
+  font-size: 24rpx;
+  color: #e53935;
+  padding: 20rpx 0 30rpx;
+  text-decoration: underline;
+}
+.delete-account-hover {
+  opacity: 0.7;
+}
+
+/* ---------- 校区 picker（v1.6.0） ----------
+   picker 里放的是 view，沿用 .text-input 的视觉，但要保证文字垂直居中。*/
+.picker-input {
+  display: flex;
+  align-items: center;
+  line-height: normal;
+}
+.picker-placeholder {
+  color: #b0b0b0;
+}
+
 /* ---------- 底部菜单（意见反馈与帮助） ---------- */
 .menu-card {
   background-color: #ffffff;

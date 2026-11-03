@@ -4,6 +4,7 @@
 //         （posts 集合对客户端零权限，本页不直接访问数据库）
 
 const store = require("../../utils/store");
+const guard = require("../../utils/guard");
 const constants = require("../../utils/constants");
 const subscribe = require("../../utils/subscribe");
 
@@ -48,6 +49,8 @@ Page({
     appliedStatus: '',
     appliedText: '',
     notFound: false,
+    // 【v1.6.0】未登录浏览：只显示「去登录」引导页，不渲染帖子正文
+    needLogin: false,
     // 管理员预览（仅管理后台点举报卡片标题进来时置 true）：
     // 放宽「审查中不可入」拦截，但同时隐藏报名/举报按钮、不加热度
     adminPreview: false,
@@ -73,6 +76,15 @@ Page({
     }
 
     const openid = store.getOpenId();
+
+    // 【v1.6.0 浏览门】详情页只要求登录（openid），不再要求资料完备 ——
+    // 资料墙只拦「发布」与「申请」两个动作（见 applyJoin），否则新用户点进第一条就被弹窗赶走。
+    // 注：受罚者（banned）的拦截在大厅入口 goToDetail 已经做过，这里不重复弹 toast。
+    if (!guard.checkLogin()) {
+      this.setData({ needLogin: true, notFound: false });
+      return;
+    }
+
     let post = store.findPost(id);
     // 缓存里没有（冷启动 / 分享直达）：先用 _id 直取这一条（1 次请求）。
     // v1.3.0 起列表只同步最新 20 条，靠 syncPosts() 会漏掉较早的帖子（分享链接进来就白屏）。
@@ -269,6 +281,11 @@ Page({
     this.setData({ resumeExpanded: !this.data.resumeExpanded });
   },
 
+  // 未登录引导：去「我的」登录（tabBar 页用 switchTab）
+  goLogin: function () {
+    wx.switchTab({ url: '/pages/profile/profile' });
+  },
+
   // 底部主按钮统一入口
   onActionClick: function () {
     if (this.data.isOwner) {
@@ -382,6 +399,11 @@ Page({
   applyJoin: async function () {
     const post = this.data.post;
     if (!post) return;
+
+    // 【v1.6.0 功能门】申请是本页唯一需要「资料完备」的动作：
+    // 昵称 / 校区 / 学号 / 联系方式缺一项，发帖人都无法正常判断与联系你。
+    // 注意：ensureReady 是同步的（不 await），不能打断下面 requestSubscribeMessage 的点击手势。
+    if (!guard.ensureReady()) return;
 
     // 兜底：已结束的帖子不再接收新申请
     if (post.status === 'ended') {

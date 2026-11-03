@@ -29,7 +29,10 @@ const COLLECTIONS = {
   // 客户端零权限，读走云函数 message，写只发生在 cloudfunctions/admin（处罚 / 解绑后投递）
   MESSAGES: 'messages',
   // 全体公告（v1.4.0）：title / content / createTime（全局，无已读字段；已读只是设备本地概念）
-  ANNOUNCEMENTS: 'announcements'
+  ANNOUNCEMENTS: 'announcements',
+  // 黑名单（v1.6.0 合规）：openid / reason / source / createTime
+  // 客户端零权限，只由云函数（user 注销 / admin 封禁）写入，login / user / publish / application 查询拦截
+  BLACKLIST: 'blacklist'
 };
 
 // 云函数名（cloudfunctions/ 目录下同名文件夹，需在工具里「上传并部署」）
@@ -49,17 +52,22 @@ const CLOUD_FUNCTIONS = {
 };
 
 // 分类：英文枚举 -> 中文
+// 【v1.6.0 文案合规】partner 的展示文案统一改为「同好」
+//   为什么改：旧文案在小程序类目审核里最容易被判成「陌生人社交」（约陌生人线下见面），
+//   而本产品实际是「同好/活动组队」的信息发布工具（无 IM、无推荐算法、无用户检索）。
+//   注意：**枚举值 partner 保持不变**，只改展示文案 —— 数据库里历史帖子的 category 仍是 partner，
+//   改了枚举值等于让所有老帖子掉出分类匹配。改文案只影响这里与 CATEGORY_LIST。
 const CATEGORY_MAP = {
   team: '组队',
   resume: '自荐',
-  partner: '搭子'
+  partner: '同好'
 };
 
 // 分类列表（发布页 picker 用，顺序即 picker 顺序）
 const CATEGORY_LIST = [
   { key: 'team', text: '组队' },
   { key: 'resume', text: '自荐' },
-  { key: 'partner', text: '搭子' }
+  { key: 'partner', text: '同好' }
 ];
 
 // 帖子状态：draft 草稿 / auditing 审核中（被举报打码）/ active 进行中（机审通过已上线）/ ended 已结束
@@ -116,10 +124,12 @@ const ROLE_MAP = {
 };
 
 // 管理后台 Tab（顺序即页面展示顺序）
+// v1.7.0 统一审核流：【举报审查】与【内容审核】合并成一张待办清单（内容审核），
+// 「发布公告」改称【系统公告】—— 三个 Tab = 三类待办，不再有重复入口。
 const ADMIN_TABS = [
-  { key: 'reports', text: '举报审查' },
+  { key: 'audit', text: '内容审核' },
   { key: 'appeal', text: '学号申诉' },
-  { key: 'announce', text: '发布公告' }
+  { key: 'announce', text: '系统公告' }
 ];
 
 // 一人一帖：同一用户同时只允许一条「占用名额」的帖子 —— active（进行中）与 auditing（审查中）
@@ -312,27 +322,34 @@ function checkTextViolation(text) {
   return { pass: true };
 }
 
-/* ---------------- 身份校验免责声明（v1.5.0，法律口径唯一来源） ----------------
- * 背景：平台没有接入学校学籍系统，也不具备任何官方身份核验能力 ——
- *   学号只校验「格式 + 是否已被占用」，真实姓名只校验「2-4 个汉字」，
- *   两者都只是输入格式约束，**不构成身份认证**。
- * 因此所有对外文案（协议 / 个人页 / 提示框）一律引用这一句，
- * 禁止再出现「实名认证」「官方认证」「身份认证」「学籍认证」等表述。 */
-const IDENTITY_DISCLAIMER = '平台仅对学号和姓名进行格式校验，不代表官方学籍认证。平台不核验用户真实身份，用户需自行判断合作风险。';
-// 个人页「学号」输入框下方的说明（与协议 1.3 同句，改这里两处同时生效）
-const STUDENT_ID_TIP = IDENTITY_DISCLAIMER;
-
-/* ---------------- 真实姓名背书（v1.4.0） -------------
- * 用途：组队沟通时的自我声明（「我确实用了真名」），不做官方实名认证。
- * 规则：2-4 个纯中文汉字，必填；绑定后不可自行修改（云端强制回落旧值，与学号锁同一套思路）。
- * 隐私：只在 users 集合私有存储 —— 不展示在任何页面、不写进帖子 / 申请 / 评价、不下发给第三方。
- * 云函数 cloudfunctions/user/index.js 里有一份同值正则，改这里要同步改。
+/* ---------------- 校区（v1.6.0） ----------------
+ * 为什么不再收集真名：平台没有核验能力，收集真名既不构成认证，又是一份纯风险数据（泄露即事故）。
+ * 现在只收「校区」：从固定选项里选的非敏感值，用于展示与匹配。
+ * 规则：
+ *   · CAMPUS_LIST 是服务端 + 前端共同认可的完整取值域，云端非法值直接拒；
+ *   · CAMPUS_OPTIONS 是 picker 当前开放给用户选的值（本期只有「揭阳」）；
+ *   · 云端校验以 CAMPUS_LIST 为准 —— 运营侧放开新校区时，老客户端保存新值也不会被拒。
+ * 【同步】cloudfunctions/user（save 校验）、publish / application（资料完备校验）里各有一份同值副本。
  */
-const REAL_NAME_REGEX = /^[\u4e00-\u9fa5]{2,4}$/;
-// 输入框下方的浅灰小字（口径：只做格式校验，不认证，不公开）
-const REAL_NAME_TIP = '仅做格式校验，不代表官方认证；绝不向任何第三方公开。';
-const REAL_NAME_REQUIRED_MESSAGE = '请填写真实姓名（仅用于组队沟通背书）';
-const REAL_NAME_INVALID_MESSAGE = '请输入 2-4 个汉字的真实姓名';
+const CAMPUS_LIST = ['揭阳', '大学城', '东风路', '龙洞', '番禺', '沙河'];
+// picker 实际可选项（用户能看到的）：本期只开揭阳，扩容时把新校区加进这个数组即可
+const CAMPUS_OPTIONS = ['揭阳'];
+// 法律口径唯一来源（协议 1.3 / 3.3、个人页提示、guard 弹窗共用这一句）
+const CAMPUS_DISCLAIMER = '平台仅收集您所在的校区，用于展示和匹配，不代表官方认证。';
+const CAMPUS_TIP = CAMPUS_DISCLAIMER;
+const CAMPUS_REQUIRED_MESSAGE = '请选择你所在的校区';
+const CAMPUS_INVALID_MESSAGE = '校区不在可选范围内，请重新选择';
+
+// 学号输入框下方说明（与协议 1.2 同一口径：只做账号唯一性校验，不接学籍系统）
+const STUDENT_ID_TIP = '学号仅用于账号唯一性校验，平台不接入学籍系统，不代表官方认证。';
+
+/* ---------------- 账号注销（v1.6.0 合规） ----------------
+ * 注销 = 写黑名单 + 删 users + 帖子 status 改 deleted + 级联清理申请/评价/通知。
+ * 黑名单只记 openid（不记昵称/学号/联系方式），否则「注销」就名不副实了。
+ */
+const DELETE_ACCOUNT_TITLE = '注销账号';
+const DELETE_ACCOUNT_CONTENT = '注销后你的资料会被删除、发布的信息全部下架，已发出的申请与评价也会一并清理，且无法恢复。确定注销吗？';
+const DELETE_ACCOUNT_REASON = 'user_deleted';
 
 /* ---------------- 个人通知 / 全体公告（v1.4.0） ----------------
  * messages：谁的通知只有谁看得见（_openid 归属），客户端零权限，读写全走云函数；
@@ -432,12 +449,16 @@ module.exports = {
   cleanText,
   checkTextViolation,
   REPORT_CATEGORIES,
-  REAL_NAME_REGEX,
-  REAL_NAME_TIP,
-  REAL_NAME_REQUIRED_MESSAGE,
-  REAL_NAME_INVALID_MESSAGE,
-  IDENTITY_DISCLAIMER,
+  CAMPUS_LIST,
+  CAMPUS_OPTIONS,
+  CAMPUS_DISCLAIMER,
+  CAMPUS_TIP,
+  CAMPUS_REQUIRED_MESSAGE,
+  CAMPUS_INVALID_MESSAGE,
   STUDENT_ID_TIP,
+  DELETE_ACCOUNT_TITLE,
+  DELETE_ACCOUNT_CONTENT,
+  DELETE_ACCOUNT_REASON,
   TMPL_APPLY_ID,
   TMPL_ACCEPT_ID,
   MESSAGE_LIST_LIMIT,

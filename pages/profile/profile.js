@@ -22,6 +22,11 @@ function buildProfileFullText(nickname, resume, contact) {
   return [nickname, resume, contact].join(' ');
 }
 
+// 校区值合法性：只认 constants.CAMPUS_LIST 里的值（历史脏数据 / 未选 -> 当作没填）
+function isCampusValue(value) {
+  return constants.CAMPUS_LIST.indexOf(String(value || '').trim()) > -1;
+}
+
 // 时间戳 -> YYYY-MM-DD（个人页只展示日期，够用也不占宽度）
 function formatReviewTime(timestamp) {
   const value = Number(timestamp) || 0;
@@ -47,18 +52,19 @@ Page({
   data: {
     isLogin: false,
     nickname: '',
-    // 真实姓名（v1.4.0 身份背书）：必填、绑定后不可改，只在云端私有存储，不在任何页面展示
-    realName: '',
-    isRealNameBound: false, // 云端已有合法真实姓名 -> 输入框禁用、不可修改
-    realNameTip: constants.REAL_NAME_TIP,
-    // 学号说明（法律口径）：与协议 1.3 同句，来源是 constants.STUDENT_ID_TIP
+    // 校区（v1.6.0）：只能从 CAMPUS_OPTIONS 里选，用于展示与匹配
+    campus: '',
+    campusOptions: constants.CAMPUS_OPTIONS,
+    campusIndex: 0, // picker 当前选中下标（与 campus 保持同步，campus 为空时给 0）
+    campusTip: constants.CAMPUS_TIP,
+    // 学号说明（法律口径）：与协议 1.2 同一口径，来源是 constants.STUDENT_ID_TIP
     studentIdTip: constants.STUDENT_ID_TIP,
     studentId: '',
     isStudentIdBound: false, // 云端已有合法学号 -> 输入框禁用、不可修改
     avatarText: '?',
     resume: '',
     contact: '',
-    isProfileReady: false, // 昵称 + 真实姓名 + 联系方式 + 广工学号 + 姓名格式均合格才为 true
+    isProfileReady: false, // 昵称 + 校区 + 联系方式 + 广工学号均合格才为 true
     // 仅 role === 'admin' 为 true：决定是否显示【进入管理后台】入口（真正的权限校验在 admin 云函数）
     isAdmin: false,
     // 消息中心红点：有未读个人通知，或最新公告比本地 lastReadMessageTime 新
@@ -104,8 +110,8 @@ Page({
       this.setData({
         isLogin: false,
         nickname: '',
-        realName: '',
-        isRealNameBound: false,
+        campus: '',
+        campusIndex: 0,
         studentId: '',
         isStudentIdBound: false,
         avatarText: '?',
@@ -138,9 +144,9 @@ Page({
     this.setData({
       isLogin: true,
       nickname: profile.nickname || '',
-      realName: profile.realName || '',
-      // 云端已有合法真实姓名即视为「已绑定」：输入框禁用，与服务端锁同一判定标准
-      isRealNameBound: store.isRealNameBound(),
+      // 校区：只可能是 CAMPUS_OPTIONS 里的值；历史脏数据 / 未选 -> 空串，picker 显示占位文案
+      campus: isCampusValue(profile.campus) ? profile.campus : '',
+      campusIndex: Math.max(0, constants.CAMPUS_OPTIONS.indexOf(profile.campus)),
       studentId: profile.studentId || '',
       // 云端已有合法学号即视为「已绑定」：输入框禁用，且与服务端的学号锁同一判定标准
       isStudentIdBound: STUDENT_ID_REGEX.test((profile.studentId || '').trim()),
@@ -218,13 +224,18 @@ Page({
       // 登录后立刻同步一次红点（否则要等下一次 onShow 才会亮）
       this.refreshMessageBadge();
       wx.showToast({
-        title: store.isProfileReady() ? '登录成功' : '登录成功，请完善昵称、真实姓名与联系方式',
+        title: store.isProfileReady() ? '登录成功' : '登录成功，请完善昵称、校区与联系方式',
         icon: 'none'
       });
     } catch (err) {
       wx.hideLoading();
       console.error('[profile] 登录失败：', err);
-      wx.showToast({ title: '登录失败，请稍后重试', icon: 'none' });
+      // 【v1.6.0】注销 / 封禁账号会被 login 云函数拦下，直接用云端给的用户可读文案
+      wx.showToast({
+        title: (err && err.code === 'ACCOUNT_BLOCKED' && err.message) || '登录失败，请稍后重试',
+        icon: 'none',
+        duration: err && err.code === 'ACCOUNT_BLOCKED' ? 3000 : 1500
+      });
     }
   },
 
@@ -260,8 +271,14 @@ Page({
     this.setData({ studentId: e.detail.value || '' });
   },
 
-  onRealNameInput: function (e) {
-    this.setData({ realName: e.detail.value || '' });
+  // 校区 picker：value 是 CAMPUS_OPTIONS 的下标，存库的是中文校区名
+  onCampusChange: function (e) {
+    const index = Number(e.detail.value) || 0;
+    const options = this.data.campusOptions || [];
+    this.setData({
+      campusIndex: index,
+      campus: options[index] || ''
+    });
   },
 
   // 「学号被他人占用？」：只给线下申诉路径，平台不收证件影像
@@ -292,15 +309,14 @@ Page({
       return;
     }
 
-    // 真实姓名：必填 + 2-4 个汉字（云端还有同样一道，防绕过）
-    // 平台只做格式校验，不收集证件、不做实名核验，也不向任何第三方公开。
-    const realName = (this.data.realName || '').trim();
-    if (!realName) {
-      wx.showToast({ title: constants.REAL_NAME_REQUIRED_MESSAGE, icon: 'none' });
+    // 校区：必选（v1.6.0）。picker 只能选 CAMPUS_OPTIONS，云端还有同样一道白名单校验
+    const campus = (this.data.campus || '').trim();
+    if (!campus) {
+      wx.showToast({ title: constants.CAMPUS_REQUIRED_MESSAGE, icon: 'none' });
       return;
     }
-    if (!constants.REAL_NAME_REGEX.test(realName)) {
-      wx.showToast({ title: constants.REAL_NAME_INVALID_MESSAGE, icon: 'none' });
+    if (constants.CAMPUS_LIST.indexOf(campus) === -1) {
+      wx.showToast({ title: constants.CAMPUS_INVALID_MESSAGE, icon: 'none' });
       return;
     }
 
@@ -334,7 +350,7 @@ Page({
     try {
       await store.saveProfile({
         nickname: nickname,
-        realName: realName,
+        campus: campus,
         studentId: studentId,
         resume: this.data.resume || '',
         contact: this.data.contact || ''
@@ -359,10 +375,10 @@ Page({
         });
       } else if (code === 'STUDENT_ID_INVALID') {
         wx.showToast({ title: '学号格式不正确，请检查后重试', icon: 'none' });
-      } else if (code === 'REAL_NAME_INVALID' || code === 'REAL_NAME_REQUIRED') {
-        // 云端姓名门禁（改包 / 旧版客户端才会走到这里）
+      } else if (code === 'CAMPUS_INVALID' || code === 'CAMPUS_REQUIRED') {
+        // 云端校区门禁（改包 / 旧版客户端才会走到这里）
         wx.showToast({
-          title: (err && err.message) || constants.REAL_NAME_INVALID_MESSAGE,
+          title: (err && err.message) || constants.CAMPUS_INVALID_MESSAGE,
           icon: 'none'
         });
       } else if (code === 'CONTENT_RISKY') {
@@ -381,6 +397,58 @@ Page({
           icon: 'none'
         });
       }
+    }
+  },
+
+  /**
+   * 注销账号（v1.6.0 合规）：破坏性且不可恢复，必须二次确认。
+   * 云端做的事：写黑名单 -> 删 users -> 帖子 status 改 deleted -> 级联清理申请/评价/通知。
+   */
+  handleDeleteAccount: function () {
+    if (!this.data.isLogin) {
+      wx.showToast({ title: '请先登录', icon: 'none' });
+      return;
+    }
+
+    const that = this;
+    wx.showModal({
+      title: constants.DELETE_ACCOUNT_TITLE,
+      content: constants.DELETE_ACCOUNT_CONTENT,
+      confirmText: '确认注销',
+      confirmColor: '#e53935',
+      cancelText: '再想想',
+      success: function (res) {
+        if (!res.confirm) return;
+        that.doDeleteAccount();
+      }
+    });
+  },
+
+  doDeleteAccount: async function () {
+    wx.showLoading({ title: '注销中...', mask: true });
+
+    try {
+      await store.deleteAccount();
+      wx.hideLoading();
+
+      this.setData({ hasUnreadMessage: false });
+      tabBadge.apply(false); // 底部「我的」红点收掉
+      await this.refreshProfile();
+
+      wx.showModal({
+        title: '账号已注销',
+        content: '你的资料与发布内容已清理。如需重新使用，请联系管理员邮箱 ' + constants.ADMIN_CONTACT_EMAIL,
+        showCancel: false,
+        confirmText: '我知道了'
+      });
+    } catch (err) {
+      wx.hideLoading();
+      console.error('[profile] 注销失败：', err);
+      wx.showToast({
+        title: (err && err.message) || '注销失败，请稍后重试',
+        icon: 'none',
+        duration: 2500
+      });
     }
   },
 

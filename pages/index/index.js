@@ -349,8 +349,9 @@ Page({
   },
 
   /**
-   * 卡片点击：先看是不是受罚者，再看是不是审查中（打码），再校验登录 / 资料完善，都过了才跳详情
-   * （登录不代表能使用：昵称/联系方式缺失时对方无法联系你，所以要在入口拦住）
+   * 卡片点击：先看是不是受罚者，再看是不是审查中（打码），最后只校验登录
+   * 【v1.6.0 漏斗优化】浏览不设资料墙：只要登录（openid 就位）就能进详情，
+   * 资料完备的拦截移到「发布」与「申请」两个真正需要展示信息 / 联系方式的动作上。
    */
   goToDetail: function (e) {
     const id = e.currentTarget.dataset.id;
@@ -379,8 +380,8 @@ Page({
       }
     }
 
-    // 3 + 4. 未登录 / 受罚者 / 资料未完善：(guard.ensureReady 内部已弹窗并引导去「我的」)
-    if (!guard.ensureReady()) return;
+    // 3. 浏览门（v1.6.0）：只校验登录；资料完备留给【发布】/【申请】去拦
+    if (!guard.checkLogin()) return;
 
     wx.navigateTo({
       url: "/pages/detail/detail?id=" + id
@@ -389,11 +390,11 @@ Page({
 
   /**
    * 发布入口（+ 号）
-   * 拦截顺序：受罚者 -> 登录/资料 -> 一人一帖（active / auditing 都占名额，只能有一条）
+   * 拦截顺序：受罚者 -> 登录/资料（ensureReady：资料未完不得发布）-> 一人一帖
    * 一人一帖判定优先读内存缓存；首次进入列表还没拉完（loaded=false）时补一次同步，避免误放行
    */
   goToPublish: async function () {
-    // 与点卡片完全同一套拦截：受罚者 / 未登录 / 资料未完善 都不得进入发布页
+    // 【发布】是资料墙唯一该拦的动作之一：没填昵称/校区/学号/联系方式就去填，否则贴出去也没人能联系你
     if (guard.isBanned()) {
       guard.promptBanned();
       return;

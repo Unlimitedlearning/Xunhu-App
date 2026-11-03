@@ -225,6 +225,83 @@ page {
   color: #bbbbbb;
 }
 
+/* ---------- 内容审核（v1.6.0） ---------- */
+/* 正文铺开显示：审核要看清内容，最多 4 行，超出省略（全文可点标题预览） */
+.audit-content {
+  margin-top: 4rpx;
+  font-size: 26rpx;
+  color: #444444;
+  line-height: 1.6;
+  background-color: #f7f8fa;
+  border-radius: 12rpx;
+  padding: 16rpx 20rpx;
+  word-break: break-all;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
+}
+
+.audit-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12rpx;
+  margin-top: 16rpx;
+}
+
+.audit-tag {
+  font-size: 22rpx;
+  line-height: 1;
+  padding: 8rpx 14rpx;
+  border-radius: 6rpx;
+  color: #6b6b6b;
+  background-color: #f2f3f5;
+}
+
+/* ---------- 内容审核：auditReason 标签（v1.7.0） ----------
+ * 卡片顶部最醒目的位置放「为什么进审」，颜色跟着严重程度走：
+ *   report  （被用户举报）红色 —— 有真实投诉，最急
+ *   warning （违规用户发布）橙色 —— 有前科，重点看
+ *   newbie  （新用户首帖）蓝色 —— 新人风险，扫一眼就行
+ *   other   （人工复核/脏数据）灰色
+ * 一个帖子可能同时命中多个条件，所以是横排自动换行的标签组。*/
+.audit-reason-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12rpx;
+  margin-bottom: 16rpx;
+}
+
+.audit-reason-tag {
+  font-size: 22rpx;
+  font-weight: bold;
+  line-height: 1;
+  padding: 10rpx 16rpx;
+  border-radius: 8rpx;
+  color: #8A8A8A;
+  background-color: #f2f3f5;
+}
+
+.tag-report {
+  color: #ffffff;
+  background-color: #e53935;
+}
+
+.tag-warning {
+  color: #ffffff;
+  background-color: #f57c00;
+}
+
+.tag-newbie {
+  color: #1e88e5;
+  background-color: #e6f0ff;
+}
+
+.tag-other {
+  color: #8A8A8A;
+  background-color: #f2f3f5;
+}
+
 /* ---------- 操作按钮 ---------- */
 .action-row {
   display: flex;

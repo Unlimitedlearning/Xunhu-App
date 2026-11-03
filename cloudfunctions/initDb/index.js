@@ -1,10 +1,10 @@
 // cloudfunctions/initDb/index.js
-// 作用：创建 posts / post_contacts / applications / users / reviews / reports / admin_logs /
-//       messages / announcements 九个集合。
+// 作用：创建 posts / post_contacts / applications / users / reports / reviews / admin_logs /
+//       messages / announcements / blacklist 十个集合。
 // 说明：客户端 SDK 没有 createCollection，只有服务端 SDK 有，所以必须放在云函数里跑一次。
 // 用法：右键本文件夹 → 上传并部署（云端安装依赖）→ 云开发控制台「云函数 - initDb - 测试」直接运行。
 //      安全规则不会自动建，建完集合还要去控制台给 post_contacts / applications / users /
-//      reports / reviews / admin_logs / messages / announcements **以及 posts**
+//      reports / reviews / admin_logs / messages / announcements / blacklist **以及 posts**
 //      全部设「所有用户不可读写」——posts 的读取也已经改走云函数 post（action: list / get），
 //      客户端不需要任何数据库权限。
 
@@ -21,7 +21,8 @@ const COLLECTIONS = [
   'reviews',
   'admin_logs',
   'messages',      // v1.4.0：个人站内通知（_openid / toOpenid / type / title / content / isRead / createTime）
-  'announcements'  // v1.4.0：全体公告（title / content / createTime）
+  'announcements', // v1.4.0：全体公告（title / content / createTime）
+  'blacklist'      // v1.6.0：黑名单（openid / reason / source / createTime），客户端零权限
 ];
 
 // 自检模式：客户端拉数据报 -502003 时调用，用服务端 SDK（不受安全规则限制）回报集合真实状态，

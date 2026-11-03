@@ -50,8 +50,12 @@ const APPLY_NOTE_MAX = 100;
 // 学号校验：广工 10 位，以 31 开头（与 utils/constants.js、cloudfunctions/user 同值）
 const STUDENT_ID_REGEX = /^31\d{8}$/;
 
-// 真实姓名：2-4 个纯中文汉字（与 utils/constants.js、cloudfunctions/user 同值）
-const REAL_NAME_REGEX = /^[\u4e00-\u9fa5]{2,4}$/;
+// 校区（v1.6.0）：取值域与 utils/constants.js 的 CAMPUS_LIST 同值
+const CAMPUS_LIST = ['揭阳', '大学城', '东风路', '龙洞', '番禺', '沙河'];
+
+// 黑名单集合（v1.6.0）：已注销 / 被封禁的账号不允许再发起申请
+const BLACKLIST = 'blacklist';
+const BLACKLIST_MESSAGE = '该账号已注销或已被限制使用，如有疑问请联系管理员邮箱：xunhu_app@qq.com';
 
 const BANNED_MESSAGE = '您的账号因违规已被限制使用';
 
@@ -164,6 +168,24 @@ function isMissingCollection(err) {
   const code = errCodeOf(err);
   const message = String((err && err.message) || '');
   return code === '-502005' || message.indexOf('not exist') > -1 || message.indexOf('collection not exists') > -1;
+}
+
+/* ---------------- 黑名单（v1.6.0） ----------------
+ * 注销 / 封禁后不允许再报名或操作申请。
+ * 查询失败按「未命中」处理（fail-open）：注销时 applications 已经级联删除，
+ * 黑名单只是第二道锁，不该因为集合未建就把正常用户全拦在外面。
+ */
+async function isBlacklisted(db, openid) {
+  const value = String(openid || '').trim();
+  if (!value) return false;
+  try {
+    const res = await db.collection(BLACKLIST).where({ openid: value }).limit(1).get();
+    return !!((res && res.data) || []).length;
+  } catch (err) {
+    if (isMissingCollection(err)) return false;
+    console.warn('[application] blacklist 查询失败，按未命中处理：', err && err.message);
+    return false;
+  }
 }
 
 function isMissingDoc(err) {
@@ -428,12 +450,12 @@ async function handleApply(db, openid, event) {
       message: '请先在「我的」页面完善昵称、学号与联系方式后再申请'
     };
   }
-  // 【v1.4.0】真实姓名同属「资料完备」：没填的不允许报名（前端 guard 同时拦一道）
-  if (!REAL_NAME_REGEX.test(String(profile.realName || '').trim())) {
+  // 【v1.6.0】校区同属「资料完备」：没选的不允许报名（前端 guard 同时拦一道）
+  if (CAMPUS_LIST.indexOf(String(profile.campus || '').trim()) === -1) {
     return {
       ok: false,
       code: 'PROFILE_NOT_READY',
-      message: '请先在「我的」页面填写真实姓名后再申请'
+      message: '请先在「我的」页面选择所在校区后再申请'
     };
   }
 
@@ -798,6 +820,12 @@ exports.main = async (event) => {
   }
 
   const db = cloud.database();
+
+  // 【v1.6.0】黑名单拦截：已注销 / 被封禁账号在入口直接拒（apply / updateStatus / list 全部不服务）
+  if (await isBlacklisted(db, openid)) {
+    console.warn('[application] 命中黑名单，拒绝服务 action=' + action + ' openid=' + openid);
+    return { ok: false, code: 'ACCOUNT_BLOCKED', message: BLACKLIST_MESSAGE };
+  }
 
   try {
     if (action === 'apply') return await handleApply(db, openid, event);

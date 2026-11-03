@@ -460,6 +460,19 @@ page {
   height: 70vh;
   color: #999999;
 }
+
+/* 未登录引导按钮（v1.6.0）：跟主色一致的胶囊按钮 */
+.login-cta {
+  margin-top: 40rpx;
+  padding: 18rpx 64rpx;
+  border-radius: 40rpx;
+  background-color: #07c160;
+  color: #ffffff;
+  font-size: 30rpx;
+}
+.login-cta-hover {
+  opacity: 0.85;
+}
 .icon {
   font-size: 100rpx;
   margin-bottom: 30rpx;

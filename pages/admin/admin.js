@@ -52,7 +52,15 @@ Page({
     userLoading: false,
     userSearched: false,
     users: [],
-    userError: ''
+    userError: '',
+
+    // ---- 发布全体公告（v1.4.0）----
+    announceTitle: '',
+    announceContent: '',
+    announceLoading: false,
+    announceError: '',
+    announceTitleMax: constants.ANNOUNCEMENT_TITLE_MAX,
+    announceContentMax: constants.ANNOUNCEMENT_CONTENT_MAX
   },
 
   // onShow 而不是 onLoad：从详情页改完帖子状态返回时也要最新列表
@@ -64,8 +72,12 @@ Page({
     try {
       if (this.data.activeTab === 'reports') {
         await this.loadReports();
-      } else if ((this.data.studentIdInput || '').trim()) {
+      } else if (this.data.activeTab === 'appeal' && (this.data.studentIdInput || '').trim()) {
         await this.searchUser();
+      }
+      // 发布公告 Tab 是表单，下拉只清错误提示，不重发上次的内容
+      if (this.data.activeTab === 'announce') {
+        this.setData({ announceError: '' });
       }
     } finally {
       wx.stopPullDownRefresh();
@@ -76,8 +88,7 @@ Page({
    * 进入前确认「已登录 + 是管理员」
    * 直接用深链接 / 编译模式打开本页时内存里可能还没有资料，所以先 syncProfile 一次
    */
-  guardAndLoad: async function () {
-    if (!store.isLoggedIn()) {
+  guardAndLoad: async function () {    if (!store.isLoggedIn()) {
       this.deny('请先登录后再进入管理后台');
       return;
     }
@@ -341,5 +352,66 @@ Page({
           });
       }
     });
+  },
+
+  /* ---------------- 发布全体公告 ---------------- */
+
+  onAnnounceTitleInput: function (e) {
+    this.setData({ announceTitle: e.detail.value || '' });
+  },
+
+  onAnnounceContentInput: function (e) {
+    this.setData({ announceContent: e.detail.value || '' });
+  },
+
+  /**
+   * 发布公告：写 announcements（所有人共用一条），不进个人 messages。
+   * 用户侧的「新公告」提示由本地 lastReadMessageTime 判定，所以这里不需要给每个人写消息。
+   */
+  onPublishAnnouncementTap: function () {
+    const title = (this.data.announceTitle || '').trim();
+    const content = (this.data.announceContent || '').trim();
+
+    if (!title) {
+      wx.showToast({ title: '请填写公告标题', icon: 'none' });
+      return;
+    }
+    if (!content) {
+      wx.showToast({ title: '请填写公告内容', icon: 'none' });
+      return;
+    }
+
+    const that = this;
+    wx.showModal({
+      title: '发布全体公告',
+      content: '发布后所有用户都会在「消息中心」看到这条公告，确定发布吗？',
+      confirmText: '发布',
+      success: function (res) {
+        if (!res.confirm) return;
+        that.publishAnnouncement(title, content);
+      }
+    });
+  },
+
+  publishAnnouncement: async function (title, content) {
+    if (this.data.announceLoading) return;
+    this.setData({ announceLoading: true, announceError: '' });
+
+    try {
+      await store.adminPublishAnnouncement({ title: title, content: content });
+      // 发布成功：清空表单，避免手滑重复发一条一样的
+      this.setData({
+        announceTitle: '',
+        announceContent: '',
+        announceLoading: false
+      });
+      wx.showToast({ title: '公告已发布', icon: 'none' });
+    } catch (err) {
+      console.error('[admin] 公告发布失败：', err);
+      const message = err && err.code === 'FUNCTION_CALL_FAILED'
+        ? 'admin 云函数未部署，请先在开发者工具上传并部署'
+        : ((err && err.message) || '公告发布失败，请稍后重试');
+      this.setData({ announceLoading: false, announceError: message });
+    }
   }
 });

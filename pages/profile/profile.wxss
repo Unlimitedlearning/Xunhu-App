@@ -234,6 +234,20 @@ page {
   vertical-align: middle;
 }
 
+/* 章节标题旁的私有徽章：告知「这一栏只做背书、不会公开」 */
+.badge-private {
+  display: inline-block;
+  margin-left: 12rpx;
+  font-size: 20rpx;
+  font-weight: normal;
+  line-height: 1;
+  color: #8a8a8a;
+  background-color: #f2f3f5;
+  padding: 6rpx 12rpx;
+  border-radius: 6rpx;
+  vertical-align: middle;
+}
+
 .tip {
   display: block;
   font-size: 22rpx;
@@ -457,6 +471,30 @@ page {
 .menu-label {
   font-size: 28rpx;
   color: var(--color-title, #1A1A1A);
+}
+
+/* 菜单标签 + 红点：横向排布，红点紧跟在文字右侧 */
+.menu-label-wrap {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  min-width: 0;
+}
+
+/* 消息中心未读红点 */
+.menu-dot {
+  width: 14rpx;
+  height: 14rpx;
+  border-radius: 50%;
+  background-color: #e53935;
+  flex-shrink: 0;
+}
+
+/* 菜单项之间的细分隔线（左侧留出文字起始位置） */
+.menu-divider {
+  height: 1rpx;
+  background-color: #f2f2f2;
+  margin-left: 32rpx;
 }
 
 .menu-arrow {

@@ -33,7 +33,7 @@ function promptLogin() {
 function promptProfile() {
   wx.showModal({
     title: '资料未完善',
-    content: '您还没有完善联系方式/昵称，队友无法联系您。点击确定去完善资料',
+    content: '您还没有完善昵称、真实姓名与联系方式，队友无法联系您。点击确定去完善资料',
     confirmText: '确定',
     cancelText: '取消',
     success: function (res) {

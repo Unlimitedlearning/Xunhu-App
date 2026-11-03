@@ -1,0 +1,149 @@
+/* pages/messages/messages.wxss */
+page {
+  background-color: #f5f6f8;
+}
+
+.page {
+  min-height: 100vh;
+  box-sizing: border-box;
+  padding: 24rpx;
+  padding-bottom: 60rpx;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 20rpx;
+}
+
+/* ---------- 消息卡片 ---------- */
+.msg-card {
+  background-color: #ffffff;
+  border-radius: var(--radius-card, 24rpx);
+  box-shadow: var(--shadow-card, 0 4rpx 16rpx rgba(0, 0, 0, 0.03));
+  padding: 28rpx 32rpx;
+}
+
+.msg-card-hover {
+  background-color: #f7f8fa;
+}
+
+/* 公告卡片：左侧绿色竖线，一眼区分「官方公告」与「个人通知」 */
+.msg-card-announcement {
+  border-left: 8rpx solid #07c160;
+}
+
+.msg-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16rpx;
+}
+
+.msg-title-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10rpx;
+}
+
+.msg-icon {
+  flex-shrink: 0;
+  font-size: 30rpx;
+  line-height: 1.4;
+}
+
+.msg-title {
+  font-size: 30rpx;
+  font-weight: bold;
+  color: var(--color-title, #1A1A1A);
+  line-height: 1.45;
+  word-break: break-all;
+}
+
+/* 未读小红点：8rpx 圆点，不挤压标题 */
+.unread-dot {
+  flex-shrink: 0;
+  width: 14rpx;
+  height: 14rpx;
+  border-radius: 50%;
+  background-color: #e53935;
+}
+
+.msg-time {
+  flex-shrink: 0;
+  font-size: 22rpx;
+  color: #bbbbbb;
+  white-space: nowrap;
+  line-height: 1.6;
+}
+
+.msg-content {
+  margin-top: 14rpx;
+  font-size: 27rpx;
+  color: #444444;
+  line-height: 1.65;
+  word-break: break-all;
+}
+
+.msg-tag-row {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  margin-top: 16rpx;
+}
+
+.msg-tag {
+  font-size: 20rpx;
+  line-height: 1;
+  padding: 6rpx 12rpx;
+  border-radius: 6rpx;
+  color: #b26a00;
+  background-color: #fff8e6;
+}
+
+.msg-tag-announcement {
+  color: #07c160;
+  background-color: #e8f8ec;
+}
+
+/* ---------- 状态 / 空态 ---------- */
+.loading-text {
+  font-size: 26rpx;
+  color: #a8a8a8;
+  text-align: center;
+  padding: 60rpx 0;
+}
+
+.error-card {
+  background-color: #fdeceb;
+  border: 1rpx solid #f8c9c4;
+  color: #c0392b;
+  border-radius: var(--radius-card, 24rpx);
+  padding: 24rpx 28rpx;
+  font-size: 24rpx;
+  line-height: 1.6;
+}
+
+.empty-card {
+  margin-top: 80rpx;
+  background-color: #ffffff;
+  border-radius: var(--radius-card, 24rpx);
+  box-shadow: var(--shadow-card, 0 4rpx 16rpx rgba(0, 0, 0, 0.03));
+  padding: 80rpx 32rpx;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16rpx;
+}
+
+.empty-emoji {
+  font-size: 56rpx;
+  line-height: 1;
+}
+
+.empty-text {
+  font-size: 26rpx;
+  color: #b0b0b0;
+}

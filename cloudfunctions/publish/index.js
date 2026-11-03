@@ -95,6 +95,10 @@ const CLEAN_TEXT_REGEX = (function () {
 
 const STUDENT_ID_REGEX = /^31\d{8}$/;
 
+// 真实姓名：2-4 个纯中文汉字（与 utils/constants.js、cloudfunctions/user 同值）
+// 只做格式校验，不做实名核验；不写入任何公开集合。
+const REAL_NAME_REGEX = /^[\u4e00-\u9fa5]{2,4}$/;
+
 const MAX_TITLE = 15;
 const MAX_CONTENT = 500;
 const MAX_TAGS = 4;
@@ -363,6 +367,10 @@ exports.main = async (event) => {
 
   if (!profile || !String(profile.nickname || '').trim()) {
     return { ok: false, code: 'PROFILE_NOT_READY', message: '请先在「我的」页面完善资料后再发布' };
+  }
+  // 【v1.4.0】真实姓名是发布硬门槛：老用户没填的也会被拦在这里（前端 guard 同时拦一道）
+  if (!REAL_NAME_REGEX.test(String(profile.realName || '').trim())) {
+    return { ok: false, code: 'PROFILE_NOT_READY', message: '请先在「我的」页面填写真实姓名后再发布' };
   }
   if (!STUDENT_ID_REGEX.test(String(profile.studentId || '').trim())) {
     return { ok: false, code: 'PROFILE_NOT_READY', message: '请先在「我的」页面绑定广工 10 位学号后再发布' };

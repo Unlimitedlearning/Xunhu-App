@@ -4,7 +4,7 @@
 
 Page({
   data: {
-    updateDate: '2026-11-02', // TODO 改为本次发版的真实日期
-    version: 'v1.3'
+    updateDate: '2026-11-03', // TODO 改为本次发版的真实日期
+    version: 'v1.4' // v1.4：新增真实姓名背书（3.3）与站内通知 / 公告（3.4）
   }
 });

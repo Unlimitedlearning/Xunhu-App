@@ -50,6 +50,9 @@ const APPLY_NOTE_MAX = 100;
 // 学号校验：广工 10 位，以 31 开头（与 utils/constants.js、cloudfunctions/user 同值）
 const STUDENT_ID_REGEX = /^31\d{8}$/;
 
+// 真实姓名：2-4 个纯中文汉字（与 utils/constants.js、cloudfunctions/user 同值）
+const REAL_NAME_REGEX = /^[\u4e00-\u9fa5]{2,4}$/;
+
 const BANNED_MESSAGE = '您的账号因违规已被限制使用';
 
 const MAX_ROWS = 100; // 单次 list 的拉取上限（服务端 SDK 上限 1000，内测量级 100 足够）
@@ -423,6 +426,14 @@ async function handleApply(db, openid, event) {
       ok: false,
       code: 'PROFILE_NOT_READY',
       message: '请先在「我的」页面完善昵称、学号与联系方式后再申请'
+    };
+  }
+  // 【v1.4.0】真实姓名同属「资料完备」：没填的不允许报名（前端 guard 同时拦一道）
+  if (!REAL_NAME_REGEX.test(String(profile.realName || '').trim())) {
+    return {
+      ok: false,
+      code: 'PROFILE_NOT_READY',
+      message: '请先在「我的」页面填写真实姓名后再申请'
     };
   }
 

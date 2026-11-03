@@ -24,7 +24,12 @@ const COLLECTIONS = {
   USERS: 'users', // 用户资料：昵称 / 学号 / 简历 / 联系方式（一个 openid 一条）
   REPORTS: 'reports', // 举报记录：postId / reporterOpenid / reason / desc / status / createTime（客户端不直接读写）
   REVIEWS: 'reviews', // 双向评价：reviewId / postId / reviewerOpenid / revieweeOpenid / rating / content / createTime（客户端不直接读写）
-  ADMIN_LOGS: 'admin_logs' // 后台操作日志：adminOpenid / action / targetId / createTime（客户端不直接读写）
+  ADMIN_LOGS: 'admin_logs', // 后台操作日志：adminOpenid / action / targetId / createTime（客户端不直接读写）
+  // 个人通知信箱（v1.4.0）：_openid / type('system') / title / content / createTime / isRead
+  // 客户端零权限，读走云函数 message，写只发生在 cloudfunctions/admin（处罚 / 解绑后投递）
+  MESSAGES: 'messages',
+  // 全体公告（v1.4.0）：title / content / createTime（全局，无已读字段；已读只是设备本地概念）
+  ANNOUNCEMENTS: 'announcements'
 };
 
 // 云函数名（cloudfunctions/ 目录下同名文件夹，需在工具里「上传并部署」）
@@ -39,7 +44,8 @@ const CLOUD_FUNCTIONS = {
   GET_AUTHOR_PROFILE: 'getAuthorProfile', // 详情页发布者名片：一次查 users 简历 + reviews 匿名统计
   ADMIN: 'admin',    // 管理后台：举报审查 / 学号申诉（校验 role === 'admin'）
   APPLICATION: 'application', // 申请流转唯一入口：apply / updateStatus / list（越权拦截在服务端）
-  POST: 'post'       // 帖子状态唯一写入口：end / delete / contact（服务端校验 authorOpenid）
+  POST: 'post',      // 帖子状态唯一写入口：end / delete / contact（服务端校验 authorOpenid）
+  MESSAGE: 'message' // 消息中心读入口：list（通知 + 公告）/ read（标记已读）/ badge（红点）
 };
 
 // 分类：英文枚举 -> 中文
@@ -112,7 +118,8 @@ const ROLE_MAP = {
 // 管理后台 Tab（顺序即页面展示顺序）
 const ADMIN_TABS = [
   { key: 'reports', text: '举报审查' },
-  { key: 'appeal', text: '学号申诉' }
+  { key: 'appeal', text: '学号申诉' },
+  { key: 'announce', text: '发布公告' }
 ];
 
 // 一人一帖：同一用户同时只允许一条「占用名额」的帖子 —— active（进行中）与 auditing（审查中）
@@ -287,6 +294,30 @@ function checkTextViolation(text) {
   return { pass: true };
 }
 
+/* ---------------- 真实姓名背书（v1.4.0） -------------
+ * 用途：组队沟通时的身份背书（「这位同学确实是本人」），不做官方实名认证。
+ * 规则：2-4 个纯中文汉字，必填；绑定后不可自行修改（云端强制回落旧值，与学号锁同一套思路）。
+ * 隐私：只在 users 集合私有存储 —— 不展示在任何页面、不写进帖子 / 申请 / 评价、不下发给第三方。
+ * 云函数 cloudfunctions/user/index.js 里有一份同值正则，改这里要同步改。
+ */
+const REAL_NAME_REGEX = /^[\u4e00-\u9fa5]{2,4}$/;
+// 输入框下方的浅灰小字（口径：只做格式校验，不认证，不公开）
+const REAL_NAME_TIP = '平台仅进行格式校验，不代表官方认证；绝不向任何第三方公开。';
+const REAL_NAME_REQUIRED_MESSAGE = '请填写真实姓名（仅用于组队沟通背书）';
+const REAL_NAME_INVALID_MESSAGE = '请输入 2-4 个汉字的真实姓名';
+
+/* ---------------- 个人通知 / 全体公告（v1.4.0） ----------------
+ * messages：谁的通知只有谁看得见（_openid 归属），客户端零权限，读写全走云函数；
+ * announcements：全局公告，没有「已读」字段 —— 「已读」是设备本地概念，
+ *   本地存 lastReadMessageTime，最新公告时间比它新就亮红点（个人通知另有 isRead 字段）。
+ */
+const MESSAGE_LIST_LIMIT = 20;     // 消息中心一次最多展示 20 条个人通知
+const ANNOUNCEMENT_LIST_LIMIT = 3; // 公告永远置顶，只取最新 3 条
+const ANNOUNCEMENT_ICON = '📢';    // 公告标题前的图标（唯一来源，页面不写死）
+const MESSAGE_EMPTY_TEXT = '暂无通知';
+const ANNOUNCEMENT_TITLE_MAX = 30;  // 公告标题上限（后台发布前后端同值校验）
+const ANNOUNCEMENT_CONTENT_MAX = 200; // 公告正文上限
+
 // 学号校验：广工 10 位学号，以 31 开头（31 + 8 位数字）
 // 同一份规则必须在两处生效：
 //   前端 profile 保存前（给用户友好提示）
@@ -306,6 +337,8 @@ const STORAGE_KEYS = {
   HEAT_HISTORY: 'local_heat_history', // 热度防刷记录：openid + 帖子 id + 日期 + 动作
   DRAFT: 'local_draft',               // 上传失败的单份草稿（离线可用，属本地概念）
   IS_LOGIN: 'isLogin',                // 仅表示「本次设备已登录」，不等于身份数据
+  // 消息中心「最近一次进入时间」：只存本地，用于判断「有没有比它更新的公告」
+  LAST_READ_MESSAGE_TIME: 'lastReadMessageTime',
   // 缓存先行（v1.1.0）：列表数据的本地快照，只为了 onShow 秒开，不入业务逻辑
   CACHE_POSTS: 'cache_posts',              // 大厅帖子快照 { updateTime, list }
   CACHE_APPLICATIONS: 'cache_applications' // 我的申请快照 { updateTime, list }（退出登录时清掉）
@@ -358,6 +391,16 @@ module.exports = {
   cleanText,
   checkTextViolation,
   REPORT_CATEGORIES,
+  REAL_NAME_REGEX,
+  REAL_NAME_TIP,
+  REAL_NAME_REQUIRED_MESSAGE,
+  REAL_NAME_INVALID_MESSAGE,
+  MESSAGE_LIST_LIMIT,
+  ANNOUNCEMENT_LIST_LIMIT,
+  ANNOUNCEMENT_ICON,
+  MESSAGE_EMPTY_TEXT,
+  ANNOUNCEMENT_TITLE_MAX,
+  ANNOUNCEMENT_CONTENT_MAX,
   STUDENT_ID_REGEX,
   STORAGE_KEYS,
   LEGACY_STORAGE_KEYS

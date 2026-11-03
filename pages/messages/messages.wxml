@@ -1,0 +1,48 @@
+<!--pages/messages/messages.wxml
+    消息中心：公告永远置顶（标题前有 📢），个人通知在后。
+    所有数据来自 message 云函数（messages / announcements 集合对客户端禁读）。-->
+<view class="page">
+
+  <view class="loading-text" wx:if="{{loading && !loaded}}">正在加载…</view>
+
+  <view class="error-card" wx:if="{{error}}">{{error}}</view>
+
+  <view class="list" wx:if="{{items.length > 0}}">
+    <view class="msg-card {{item.kind === 'announcement' ? 'msg-card-announcement' : ''}}"
+          wx:for="{{items}}"
+          wx:key="id"
+          data-id="{{item.id}}"
+          data-kind="{{item.kind}}"
+          data-isread="{{item.isRead}}"
+          hover-class="msg-card-hover"
+          hover-stay-time="80"
+          bindtap="onItemTap">
+
+      <view class="msg-head">
+        <view class="msg-title-wrap">
+          <!-- 公告标题前的 📢（图标来自 constants.ANNOUNCEMENT_ICON，页面不写死） -->
+          <text class="msg-icon" wx:if="{{item.icon}}">{{item.icon}}</text>
+          <text class="msg-title">{{item.title}}</text>
+          <!-- 未读个人通知：标题右侧小圆点（公告没有按人已读，不显示） -->
+          <view class="unread-dot" wx:if="{{item.kind === 'message' && !item.isRead}}"></view>
+        </view>
+        <text class="msg-time">{{item.timeText}}</text>
+      </view>
+
+      <view class="msg-content">{{item.content}}</view>
+
+      <view class="msg-tag-row">
+        <text class="msg-tag msg-tag-announcement" wx:if="{{item.kind === 'announcement'}}">全体公告</text>
+        <text class="msg-tag" wx:if="{{item.kind === 'message' && !item.isRead}}">未读 · 点一下标记已读</text>
+      </view>
+
+    </view>
+  </view>
+
+  <!-- 空态：公告与个人通知都没有 -->
+  <view class="empty-card" wx:if="{{loaded && !error && items.length === 0}}">
+    <view class="empty-emoji">🔔</view>
+    <view class="empty-text">{{emptyText}}</view>
+  </view>
+
+</view>

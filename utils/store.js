@@ -44,6 +44,7 @@ const cache = {
   profileLoaded: false,    // 本次会话是否已成功从云端拉过资料（失败/退出后置 false，重登录会重拉）
   myReviews: [],           // 我发出的评价（reviews 中 reviewerOpenid === 我）：任务页标记「已评价」用
   receivedReviews: null,   // 我收到的评价统计（total / goodCount / rate / list），个人页用
+  messageCenter: null,     // 消息中心（公告 + 个人通知），null = 本次会话还没拉过
   openid: ''
 };
 
@@ -865,6 +866,8 @@ function normalizeProfile(doc) {
   if (!doc) return null;
   return {
     nickname: doc.nickname || '',
+    // 真实姓名（v1.4.0）：只用于组队沟通背书，仅云端私有存储，不在任何页面 / 帖子 / 申请里展示
+    realName: doc.realName || '',
     studentId: doc.studentId || '',
     resume: doc.resume || '',
     contact: doc.contact || '',
@@ -904,15 +907,26 @@ function getNickname() {
   return (cache.profile && cache.profile.nickname) || '';
 }
 
-// 资料是否「完善」：昵称 + 联系方式都非空，且学号能过广工 10 位正则
+// 资料是否「完善」：昵称 + 真实姓名 + 联系方式都非空，且学号能过广工 10 位正则、真实姓名能过 2-4 汉字正则
 // 这是「能不能使用大厅功能」的唯一判定点（guard / profile / 发布 / 申请共用）
+// 【v1.4.0】真实姓名加入完备性校验：老用户没填的会直接被拦，强制他到「我的」补全。
 function isProfileReady() {
   const profile = cache.profile;
   if (!profile) return false;
   const nickname = (profile.nickname || '').trim();
+  const realName = (profile.realName || '').trim();
   const contact = (profile.contact || '').trim();
   const studentId = (profile.studentId || '').trim();
-  return nickname !== '' && contact !== '' && constants.STUDENT_ID_REGEX.test(studentId);
+  return nickname !== '' && contact !== '' &&
+    constants.REAL_NAME_REGEX.test(realName) &&
+    constants.STUDENT_ID_REGEX.test(studentId);
+}
+
+// 同步读：真实姓名是否已「合法绑定」（前端决定输入框是否禁用；真正的锁在 user 云函数）
+function isRealNameBound() {
+  const profile = cache.profile;
+  if (!profile) return false;
+  return constants.REAL_NAME_REGEX.test((profile.realName || '').trim());
 }
 
 // 保存资料：写云端，同时更新内存缓存；不写任何本地 Storage
@@ -920,12 +934,20 @@ async function saveProfile(profile) {
   await ensureInit();
   const input = {
     nickname: (profile.nickname || '').trim(),
+    realName: (profile.realName || '').trim(),
     studentId: (profile.studentId || '').trim(),
     resume: (profile.resume || '').trim(),
     contact: (profile.contact || '').trim()
   };
   if (!input.nickname) {
     throw new Error('昵称不能为空');
+  }
+
+  // 真实姓名：必填 + 2-4 个汉字（云端还有同样一道，防绕过）
+  if (!constants.REAL_NAME_REGEX.test(input.realName)) {
+    const err = new Error(constants.REAL_NAME_INVALID_MESSAGE);
+    err.code = 'REAL_NAME_INVALID';
+    throw err;
   }
 
   // 前端先拦一道（云函数里还有同样的一道，防绕过）
@@ -1258,6 +1280,137 @@ async function fetchAuthorProfile(input) {
   return normalizeAuthorCard(result);
 }
 
+/* ---------------- 消息中心（云函数 message） ----------------
+  messages / announcements 对客户端都是「所有用户不可读写」：
+    · 个人通知：谁的通知只有谁看得见，归属判定必须在服务端（改包也看不到别人的）；
+    · 全体公告：全局数据，没有「按人已读」概念 —— 已读只存在本设备（lastReadMessageTime），
+      最新公告时间比它新就亮红点（个人通知另有 isRead 字段，存在云端）。
+  因此：列表 / 标记已读 / 红点统计全部走云函数，本地只存一个时间戳。*/
+
+async function callMessageFunction(data) {
+  let res;
+  try {
+    res = await wx.cloud.callFunction({ name: CLOUD_FUNCTIONS.MESSAGE, data: data });
+  } catch (err) {
+    const wrapped = new Error('message 云函数调用失败，请确认已上传并部署');
+    wrapped.code = 'FUNCTION_CALL_FAILED';
+    wrapped.cause = err;
+    throw wrapped;
+  }
+
+  const result = (res && res.result) || {};
+  if (!result.ok) {
+    const err = new Error(result.message || '消息加载失败，请稍后重试');
+    err.code = result.code || 'MESSAGE_FAILED';
+    throw err;
+  }
+  return result;
+}
+
+// 字段全兜底：云端少给任何一个字段，页面也不会拿到 undefined
+function normalizeMessage(doc) {
+  const raw = doc || {};
+  return {
+    id: raw.id || raw._id || '',
+    kind: 'message',
+    type: String(raw.type || 'system'),
+    title: String(raw.title || ''),
+    content: String(raw.content || ''),
+    isRead: !!raw.isRead,
+    createTime: Number(raw.createTime) || 0
+  };
+}
+
+function normalizeAnnouncement(doc) {
+  const raw = doc || {};
+  return {
+    id: raw.id || raw._id || '',
+    kind: 'announcement',
+    title: String(raw.title || ''),
+    content: String(raw.content || ''),
+    isRead: true, // 公告没有「按人已读」，展示层不需要未读圆点
+    createTime: Number(raw.createTime) || 0
+  };
+}
+
+/**
+ * 拉消息中心：最新 20 条个人通知 + 最新 3 条公告（云函数已排序、已按归属裁剪）
+ * @return {Promise<{announcements: Array, messages: Array}>}
+ */
+async function fetchMessageCenter() {
+  await ensureInit();
+  const result = await callMessageFunction({ action: 'list' });
+
+  const announcements = (Array.isArray(result.announcements) ? result.announcements : [])
+    .map(normalizeAnnouncement)
+    .filter(function (item) { return !!item.id; });
+  const messages = (Array.isArray(result.messages) ? result.messages : [])
+    .map(normalizeMessage)
+    .filter(function (item) { return !!item.id; });
+
+  cache.messageCenter = { announcements: announcements, messages: messages };
+  return cache.messageCenter;
+}
+
+/**
+ * 标记单条通知已读（只能标记自己的，云端按归属字段校验）
+ * 成功后就地更新缓存，页面无需重新拉列表
+ */
+async function markMessageRead(messageId) {
+  const id = String(messageId || '').trim();
+  if (!id) return false;
+
+  await ensureInit();
+  await callMessageFunction({ action: 'read', messageId: id });
+
+  if (cache.messageCenter) {
+    cache.messageCenter.messages.forEach(function (item) {
+      if (item.id === id) item.isRead = true;
+    });
+  }
+  return true;
+}
+
+// 本地「最近一次进入消息中心」的时间戳（公告红点判定用）
+function getLastReadMessageTime() {
+  return Number(wx.getStorageSync(STORAGE_KEYS.LAST_READ_MESSAGE_TIME)) || 0;
+}
+
+// 进入消息页后调用：把时间戳推到当下，公告红点随即消失
+function markMessagesSeen() {
+  const now = Date.now();
+  try {
+    wx.setStorageSync(STORAGE_KEYS.LAST_READ_MESSAGE_TIME, now);
+  } catch (err) {
+    console.warn('[store] 写入消息已读时间失败：', err);
+  }
+  return now;
+}
+
+/**
+ * 红点判定：有未读个人通知（云端 isRead === false）或 有比本地时间更新的公告
+ * 失败不抛错（个人页 onShow 调，不能因此报错）：统一回 { hasUnread: false }
+ * @return {Promise<{hasUnread: boolean, unreadCount: number, newAnnouncement: boolean}>}
+ */
+async function fetchMessageBadge() {
+  const none = { hasUnread: false, unreadCount: 0, newAnnouncement: false };
+  try {
+    await ensureInit();
+    const result = await callMessageFunction({ action: 'badge' });
+    const unreadCount = Number(result.unreadCount) || 0;
+    const latest = Number(result.latestAnnouncementTime) || 0;
+    const newAnnouncement = latest > 0 && latest > getLastReadMessageTime();
+    return {
+      hasUnread: unreadCount > 0 || newAnnouncement,
+      unreadCount: unreadCount,
+      newAnnouncement: newAnnouncement
+    };
+  } catch (err) {
+    console.warn('[store] 消息红点查询失败（已按无红点处理）：', err);
+    return none;
+  }
+}
+
 // 当前用户是不是管理员（role 由 users 集合提供，前端只用来决定是否显示「进入管理后台」入口）
 function isAdmin() {
   return !!(cache.profile && String(cache.profile.role || '').toLowerCase() === 'admin');
@@ -1369,6 +1522,34 @@ async function adminUnbind(targetOpenid) {
   return callAdminFunction({ action: 'unbind', targetOpenid: openid });
 }
 
+/**
+ * 发布全体公告（写 announcements；客户端零权限，只能走 admin 云函数）
+ * 公告不需要给每个人写一条 messages：它的已读是「设备本地时间」概念。
+ * @param {{title:string, content:string}} input
+ */
+async function adminPublishAnnouncement(input) {
+  const title = String((input && input.title) || '').trim();
+  const content = String((input && input.content) || '').trim();
+
+  if (!title) {
+    const err = new Error('请填写公告标题');
+    err.code = 'TITLE_REQUIRED';
+    throw err;
+  }
+  if (!content) {
+    const err = new Error('请填写公告内容');
+    err.code = 'CONTENT_REQUIRED';
+    throw err;
+  }
+
+  await ensureInit();
+  return callAdminFunction({
+    action: 'publishAnnouncement',
+    title: title,
+    content: content
+  });
+}
+
 /* ---------------- 登录态 ---------------- */
 
 function isLoggedIn() {
@@ -1401,8 +1582,15 @@ function logout() {
   cache.profileLoaded = false; // 下次登录重新从云端拉
   cache.myReviews = [];        // 评价也属于个人数据，退出即清
   cache.receivedReviews = null;
+  cache.messageCenter = null;  // 站内通知属于个人数据，退出即清
   cache.applications = [];     // 申请含联系方式 / 学号，退出即清（含本地快照）
   clearSnapshot(STORAGE_KEYS.CACHE_APPLICATIONS);
+  try {
+    // 已读时间也是个人状态：换账号登录时不能继承上一个人的「已看过公告」
+    wx.removeStorageSync(STORAGE_KEYS.LAST_READ_MESSAGE_TIME);
+  } catch (err) {
+    console.warn('[store] 清理消息已读时间失败：', err);
+  }
 }
 
 // openid 由 app.js 启动时预热，页面里同步取用
@@ -1450,7 +1638,15 @@ module.exports = {
   syncProfile,
   getNickname,
   isProfileReady,
+  isRealNameBound,
   submitReport,
+
+  // 消息中心（云函数 message）
+  fetchMessageCenter,
+  markMessageRead,
+  fetchMessageBadge,
+  markMessagesSeen,
+  getLastReadMessageTime,
 
   // reviews（双向评价，全部走云函数）
   getMyReviews,
@@ -1474,6 +1670,7 @@ module.exports = {
   adminHandleReport,
   adminSearchUser,
   adminUnbind,
+  adminPublishAnnouncement,
 
   // auth
   isLoggedIn,

@@ -35,14 +35,20 @@ Page({
   data: {
     isLogin: false,
     nickname: '',
+    // 真实姓名（v1.4.0 身份背书）：必填、绑定后不可改，只在云端私有存储，不在任何页面展示
+    realName: '',
+    isRealNameBound: false, // 云端已有合法真实姓名 -> 输入框禁用、不可修改
+    realNameTip: constants.REAL_NAME_TIP,
     studentId: '',
     isStudentIdBound: false, // 云端已有合法学号 -> 输入框禁用、不可修改
     avatarText: '?',
     resume: '',
     contact: '',
-    isProfileReady: false, // 昵称 + 联系方式 + 广工学号格式均合格才为 true
+    isProfileReady: false, // 昵称 + 真实姓名 + 联系方式 + 广工学号 + 姓名格式均合格才为 true
     // 仅 role === 'admin' 为 true：决定是否显示【进入管理后台】入口（真正的权限校验在 admin 云函数）
     isAdmin: false,
+    // 消息中心红点：有未读个人通知，或最新公告比本地 lastReadMessageTime 新
+    hasUnreadMessage: false,
 
     // ---- 收到的评价（reviews 集合，全部匿名） ----
     reviewTotal: 0,                        // 收到多少条评价（含没写文字的）
@@ -56,6 +62,20 @@ Page({
 
   onShow: function () {
     this.refreshProfile();
+    this.refreshMessageBadge();
+  },
+
+  /**
+   * 消息红点：有未读个人通知 或 有比本地 lastReadMessageTime 更新的公告
+   * 未登录 / message 云函数未部署一律按「无红点」处理（store 内部已兜底，不抛错）
+   */
+  refreshMessageBadge: async function () {
+    if (!store.isLoggedIn()) {
+      this.setData({ hasUnreadMessage: false });
+      return;
+    }
+    const badge = await store.fetchMessageBadge();
+    this.setData({ hasUnreadMessage: !!badge.hasUnread });
   },
 
   /**
@@ -66,6 +86,8 @@ Page({
       this.setData({
         isLogin: false,
         nickname: '',
+        realName: '',
+        isRealNameBound: false,
         studentId: '',
         isStudentIdBound: false,
         avatarText: '?',
@@ -73,6 +95,7 @@ Page({
         contact: '',
         isProfileReady: false,
         isAdmin: false,
+        hasUnreadMessage: false,
         reviewTotal: 0,
         reviewGoodCount: 0,
         reviewRate: 0,
@@ -94,6 +117,9 @@ Page({
     this.setData({
       isLogin: true,
       nickname: profile.nickname || '',
+      realName: profile.realName || '',
+      // 云端已有合法真实姓名即视为「已绑定」：输入框禁用，与服务端锁同一判定标准
+      isRealNameBound: store.isRealNameBound(),
       studentId: profile.studentId || '',
       // 云端已有合法学号即视为「已绑定」：输入框禁用，且与服务端的学号锁同一判定标准
       isStudentIdBound: STUDENT_ID_REGEX.test((profile.studentId || '').trim()),
@@ -166,7 +192,7 @@ Page({
       wx.hideLoading();
       await this.refreshProfile();
       wx.showToast({
-        title: store.isProfileReady() ? '登录成功' : '登录成功，请完善昵称与联系方式',
+        title: store.isProfileReady() ? '登录成功' : '登录成功，请完善昵称、真实姓名与联系方式',
         icon: 'none'
       });
     } catch (err) {
@@ -206,6 +232,10 @@ Page({
     this.setData({ studentId: e.detail.value || '' });
   },
 
+  onRealNameInput: function (e) {
+    this.setData({ realName: e.detail.value || '' });
+  },
+
   // 「学号被他人占用？」：只给线下申诉路径，平台不收证件影像
   onStudentIdOccupied: function () {
     wx.showModal({
@@ -231,6 +261,18 @@ Page({
     const nickname = (this.data.nickname || '').trim();
     if (!nickname) {
       wx.showToast({ title: '请先填写昵称', icon: 'none' });
+      return;
+    }
+
+    // 真实姓名：必填 + 2-4 个汉字（云端还有同样一道，防绕过）
+    // 平台只做格式校验，不收集证件、不做实名核验，也不向任何第三方公开。
+    const realName = (this.data.realName || '').trim();
+    if (!realName) {
+      wx.showToast({ title: constants.REAL_NAME_REQUIRED_MESSAGE, icon: 'none' });
+      return;
+    }
+    if (!constants.REAL_NAME_REGEX.test(realName)) {
+      wx.showToast({ title: constants.REAL_NAME_INVALID_MESSAGE, icon: 'none' });
       return;
     }
 
@@ -264,6 +306,7 @@ Page({
     try {
       await store.saveProfile({
         nickname: nickname,
+        realName: realName,
         studentId: studentId,
         resume: this.data.resume || '',
         contact: this.data.contact || ''
@@ -277,7 +320,7 @@ Page({
         wx.showToast({
           title: store.isProfileReady()
             ? '现在您可以前往大厅发布需求了'
-            : '昵称、学号与联系方式都填好即可解锁大厅功能',
+            : '昵称、真实姓名、学号与联系方式都填好即可解锁大厅功能',
           icon: 'none',
           duration: 2500
         });
@@ -297,6 +340,12 @@ Page({
         });
       } else if (code === 'STUDENT_ID_INVALID') {
         wx.showToast({ title: '学号格式不正确，请检查后重试', icon: 'none' });
+      } else if (code === 'REAL_NAME_INVALID' || code === 'REAL_NAME_REQUIRED') {
+        // 云端姓名门禁（改包 / 旧版客户端才会走到这里）
+        wx.showToast({
+          title: (err && err.message) || constants.REAL_NAME_INVALID_MESSAGE,
+          icon: 'none'
+        });
       } else if (code === 'CONTENT_RISKY') {
         // 【第二道：云端拦截】本地校验被绕过（改包 / 旧版本客户端）时走到这里，
         // 云端已按「保存失败：包含违规词汇【xxx】，请修改后重试。」下发，优先直接展示
@@ -325,6 +374,24 @@ Page({
       url: '/pages/admin/admin',
       fail: function (err) {
         console.error('[admin] 打开管理后台失败：', err);
+        wx.showToast({ title: '页面打开失败，请稍后重试', icon: 'none' });
+      }
+    });
+  },
+
+  /**
+   * 进入消息中心（公告 + 个人通知）
+   * 红点会在返回本页的 onShow 里重新查一次（公告本地时间已在消息页更新）
+   */
+  onMessageTap: function () {
+    if (!this.data.isLogin) {
+      wx.showToast({ title: '请先登录后查看通知', icon: 'none' });
+      return;
+    }
+    wx.navigateTo({
+      url: '/pages/messages/messages',
+      fail: function (err) {
+        console.error('[messages] 打开消息中心失败：', err);
         wx.showToast({ title: '页面打开失败，请稍后重试', icon: 'none' });
       }
     });

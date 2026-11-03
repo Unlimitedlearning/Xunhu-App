@@ -6,6 +6,7 @@
     "pages/detail/detail",
     "pages/task/task",
     "pages/agreement/agreement",
+    "pages/messages/messages",
     "pages/admin/admin"
   ],
   "window": {

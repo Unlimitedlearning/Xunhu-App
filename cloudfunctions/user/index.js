@@ -15,6 +15,8 @@
 // 调用方式（均需先「上传并部署」本云函数）：
 //   { action: 'get' }                        -> { ok, data: doc | null }
 //   { action: 'save', profile: {...} }        -> { ok, data: doc }
+//     profile 白名单：nickname / realName / studentId / resume / contact
+//     realName（v1.4.0）：必填，^[\u4e00-\u9fa5]{2,4}$；绑定后不可改（云端强制回落旧值）
 
 const cloud = require('wx-server-sdk');
 
@@ -25,6 +27,11 @@ const COLLECTION = 'users';
 // 学号校验：广工 10 位，以 31 开头
 // 与小程序端 utils/constants.js 的 STUDENT_ID_REGEX 保持一致（云函数目录独立，无法 require 小程序文件）
 const STUDENT_ID_REGEX = /^31\d{8}$/;
+
+// 真实姓名校验：2-4 个纯中文汉字（与小程序端 constants.REAL_NAME_REGEX 同值）
+// 【注意】这里只做格式校验：平台不收集证件、不做实名核验，也不向任何第三方公开；
+//   该字段只落在 users 集合，不进 posts / applications / reviews，不参与任何公开下发。
+const REAL_NAME_REGEX = /^[\u4e00-\u9fa5]{2,4}$/;
 
 /* ---------------- 用户角色（v1.1.0 角色底座） ----------------
  * role 只允许三个值：
@@ -156,12 +163,13 @@ function pickRole(doc) {
   return VALID_ROLES.indexOf(role) > -1 ? role : ROLE_USER;
 }
 
-// 字段白名单：只允许这四个字段被客户端写入。
+// 字段白名单：只允许这五个字段被客户端写入。
 // 注意：role / _openid / openid / createTime 都不在白名单里 —— 这就是「客户端改不了角色」的根本保证。
 function normalize(input) {
   const source = input || {};
   return {
     nickname: String(source.nickname || '').trim(),
+    realName: String(source.realName || '').trim(),
     studentId: String(source.studentId || '').trim(),
     resume: String(source.resume || '').trim(),
     contact: String(source.contact || '').trim()
@@ -298,6 +306,16 @@ exports.main = async (event) => {
     if (data.nickname.length > 20) {
       return { ok: false, code: 'NICKNAME_TOO_LONG', message: '昵称最多 20 个字' };
     }
+
+    // 【真实姓名】必填 + 纯中文 2-4 字。
+    // 前端已拦一道，这里再校验一次：改包 / 旧版客户端绕过前端时仍会被拒。
+    // 老用户没填过 realName 的，在这里被强制要求补全（前端 isProfileReady 同步拦住入口）。
+    if (!data.realName) {
+      return { ok: false, code: 'REAL_NAME_REQUIRED', message: '请填写真实姓名（仅用于组队沟通背书）' };
+    }
+    if (!REAL_NAME_REGEX.test(data.realName)) {
+      return { ok: false, code: 'REAL_NAME_INVALID', message: '请输入 2-4 个汉字的真实姓名' };
+    }
     if (data.resume.length > 300) {
       return { ok: false, code: 'RESUME_TOO_LONG', message: '简历最多 300 个字' };
     }
@@ -373,6 +391,15 @@ exports.main = async (event) => {
           payload.studentId = boundStudentId;
         }
 
+        // 【真实姓名锁】已合法绑定过真实姓名时，同样强制回落到库里的旧值（绑定后不可修改）。
+        // 判定标准与学号锁一致：旧值本身不合法的（脏数据）不锁，否则用户永远改不回来。
+        const boundRealName = String(primary.realName || '').trim();
+        const realNameLocked = REAL_NAME_REGEX.test(boundRealName);
+        if (realNameLocked && payload.realName !== boundRealName) {
+          console.warn('[user] 真实姓名已绑定，忽略请求中的新值：', openid, '->', boundRealName);
+          payload.realName = boundRealName;
+        }
+
         await db.collection(COLLECTION).doc(primary._id).update({ data: payload });
 
         // 清理历史重复行（只删自己的 openid，且只保留最新一条）
@@ -391,7 +418,8 @@ exports.main = async (event) => {
           ok: true,
           data: Object.assign({}, primary, payload),
           removed: removed,
-          studentIdLocked: studentIdLocked
+          studentIdLocked: studentIdLocked,
+          realNameLocked: realNameLocked
         };
       }
 

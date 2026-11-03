@@ -14,7 +14,12 @@
 //   { action: 'violate', reportId, postId }       -> 帖子 reportWeight +2 + 打码下架 + 发帖人警告 +1
 //   { action: 'searchUser', studentId }           -> { ok, total, list }  按学号查绑定者
 //   { action: 'unbind', targetOpenid }            -> 把目标用户 studentId 置空（申诉处理）
-//   ignore / violate / unbind 都会写 admin_logs（adminOpenid / action / targetId / createTime）。
+//   { action: 'publishAnnouncement', title, content } -> 发布全体公告（写 announcements）
+//   ignore / violate / unbind / publishAnnouncement 都会写 admin_logs（adminOpenid / action / targetId / createTime）。
+//
+// 【v1.4.0 站内通知】violate / unbind 执行成功后，会向被处置人投递一条 messages 系统通知
+//   （归属字段 = 目标用户；messages 集合客户端零权限，只有他本人的消息中心能看到）。
+//   通知投递失败（集合未建 / 权限异常）绝不能影哨主流程结果：只记 warn 并继续。
 //
 // 【阈值同步】REPORT_WEIGHT_AUDIT_THRESHOLD / WARNING_BAN_THRESHOLD 与
 //   cloudfunctions/report/index.js、utils/constants.js 三处同值，改一处必须同步其余两处。
@@ -27,6 +32,15 @@ const POSTS = 'posts';
 const REPORTS = 'reports';
 const USERS = 'users';
 const ADMIN_LOGS = 'admin_logs';
+const MESSAGES = 'messages';
+const ANNOUNCEMENTS = 'announcements';
+
+// 公告长度上限 / 通知类型（与小程序端 constants 同值）
+const ANNOUNCEMENT_TITLE_MAX = 30;
+const ANNOUNCEMENT_CONTENT_MAX = 200;
+const MESSAGE_TYPE_SYSTEM = 'system';
+// 对外联系邮箱（口径「十、违规处置」：处罚通知必须给出真实邮箱）
+const ADMIN_CONTACT_EMAIL = 'xunhu_app@qq.com';
 
 // 自动风控阈值（与 cloudfunctions/report、utils/constants.js 三处同值）
 const REPORT_WEIGHT_AUDIT_THRESHOLD = 5;
@@ -162,6 +176,62 @@ async function writeLog(db, adminOpenid, action, targetId, extra) {
       }
     }
     console.error('[admin] admin_logs 写入失败：', err && err.message);
+    return false;
+  }
+}
+
+/* ---------------- 站内通知（messages） ----------------
+ * 写入时同时带两个归属字段：
+ *   _openid  ：云开发标准的用户标识（消息云函数优先按它查）；
+ *   toOpenid ：兜底字段（部分环境服务端 SDK 不允许显式写 _openid，此时降级只用它）。
+ * 消息云函数两个字段都会查并按 _id 去重，所以写入端能不能写 _openid 都不影响送达。
+ * 这里只负责「投递」，已读（isRead）只能由消息云函数写。
+ */
+async function sendUserMessage(db, targetOpenid, title, content, extra) {
+  const openid = String(targetOpenid || '').trim();
+  if (!openid) return false;
+
+  const base = Object.assign({
+    toOpenid: openid,
+    type: MESSAGE_TYPE_SYSTEM,
+    title: String(title || '').trim(),
+    content: String(content || '').trim(),
+    isRead: false,
+    createTime: Date.now()
+  }, extra || {});
+
+  const withOwner = Object.assign({ _openid: openid }, base);
+
+  try {
+    await db.collection(MESSAGES).add({ data: withOwner });
+    return true;
+  } catch (err) {
+    const message = String((err && err.message) || '');
+
+    // 1) 集合不存在：建完重试一次
+    if (isMissingCollection(err)) {
+      try {
+        await db.createCollection(MESSAGES);
+        await db.collection(MESSAGES).add({ data: withOwner });
+        return true;
+      } catch (retryErr) {
+        console.error('[admin] messages 写入失败（集合是否已创建？）：', retryErr && retryErr.message);
+        return false;
+      }
+    }
+
+    // 2) 运行环境不允许服务端写 _openid：降级成只用 toOpenid（消息云函数兼容）
+    if (message.indexOf('_openid') > -1) {
+      try {
+        await db.collection(MESSAGES).add({ data: base });
+        return true;
+      } catch (fallbackErr) {
+        console.error('[admin] messages 降级写入失败：', fallbackErr && fallbackErr.message);
+        return false;
+      }
+    }
+
+    console.error('[admin] messages 写入失败：', message);
     return false;
   }
 }
@@ -457,13 +527,33 @@ async function handleViolate(db, adminOpenid, payload) {
   }
 
   const reportMarked = await markReportDone(db, reportId, 'violate', adminOpenid, { weightAfter: weight });
+
+  // 站内通知：把处罚结果说清楚（含真实邮箱），用户才能在消息中心看到原因与申诉渠道。
+  // 发送失败不影响处罚本身（通知是附带能力，不能把举报处理搞挂）。
+  let notified = false;
+  if (authorOpenid) {
+    const title = String(post.title || '').trim().slice(0, 30);
+    const banText = (warning && warning.banned)
+      ? '您的账号违规累计已达 3 次，已被限制发布与报名。'
+      : '累计违规 3 次将限制账号使用。';
+    notified = await sendUserMessage(
+      db,
+      authorOpenid,
+      '内容违规处理通知',
+      '您发布的「' + (title || '未命名信息') + '」经管理员核实存在违规内容，已被下架。' +
+      banText + '如有疑问请联系管理员邮箱：' + ADMIN_CONTACT_EMAIL,
+      { postId: postId, reportId: reportId }
+    );
+  }
+
   const logged = await writeLog(db, adminOpenid, 'violate', postId, {
     reportId: reportId,
     postId: postId,
     weightAfter: weight,
     postStatus: data.status || status,
     warningCount: warning ? warning.warningCount : null,
-    banned: warning ? warning.banned : false
+    banned: warning ? warning.banned : false,
+    notified: notified
   });
 
   return {
@@ -474,6 +564,7 @@ async function handleViolate(db, adminOpenid, payload) {
     reportWeight: weight,
     warningCount: warning ? warning.warningCount : null,
     banned: warning ? warning.banned : false,
+    notified: notified,
     reportMarked: reportMarked,
     logged: logged
   };
@@ -549,17 +640,92 @@ async function handleUnbind(db, adminOpenid, payload) {
     };
   }
 
+  // 站内通知：解绑是用户感知最强的处置之一，必须告诉他「发生了什么 + 怎么恢复 + 找谁」
+  const notified = await sendUserMessage(
+    db,
+    targetOpenid,
+    '学号绑定已解除',
+    '管理员已解除您账号上的学号绑定（原学号已清空）。重新绑定广工学号后才能继续发布与报名。' +
+    '若您没有发起申诉，或对处理结果有疑问，请联系管理员邮箱：' + ADMIN_CONTACT_EMAIL,
+    { oldStudentId: oldStudentId }
+  );
+
   const logged = await writeLog(db, adminOpenid, 'unbind', targetOpenid, {
     oldStudentId: oldStudentId,
-    nickname: doc.nickname || ''
+    nickname: doc.nickname || '',
+    notified: notified
   });
 
   return {
     ok: true,
     targetOpenid: targetOpenid,
     oldStudentId: oldStudentId,
+    notified: notified,
     logged: logged
   };
+}
+
+/* ---------------- action: publishAnnouncement ----------------
+ * 全体公告：写一条 announcements（title / content / createTime），
+ * 不往每个人写一条 messages —— 公告是「所有人共用一条」，个人消息是「一人一条」。
+ * 已读由客户端本地 lastReadMessageTime 判定，因此服务端不存已读状态。
+ */
+async function handlePublishAnnouncement(db, adminOpenid, payload) {
+  const title = String(payload.title || '').trim();
+  const content = String(payload.content || '').trim();
+
+  if (!title) {
+    return { ok: false, code: 'TITLE_REQUIRED', message: '请填写公告标题' };
+  }
+  if (title.length > ANNOUNCEMENT_TITLE_MAX) {
+    return { ok: false, code: 'TITLE_TOO_LONG', message: '公告标题最多 ' + ANNOUNCEMENT_TITLE_MAX + ' 个字' };
+  }
+  if (!content) {
+    return { ok: false, code: 'CONTENT_REQUIRED', message: '请填写公告内容' };
+  }
+  if (content.length > ANNOUNCEMENT_CONTENT_MAX) {
+    return { ok: false, code: 'CONTENT_TOO_LONG', message: '公告内容最多 ' + ANNOUNCEMENT_CONTENT_MAX + ' 个字' };
+  }
+
+  const data = {
+    title: title,
+    content: content,
+    createTime: Date.now(),
+    // 留痕用：哪一位管理员发的（公告本身不向客户端下发 openid）
+    adminOpenid: adminOpenid
+  };
+
+  let id = '';
+  try {
+    const res = await db.collection(ANNOUNCEMENTS).add({ data: data });
+    id = (res && res._id) || '';
+  } catch (err) {
+    if (!isMissingCollection(err)) {
+      return {
+        ok: false,
+        code: errCodeOf(err) || 'ANNOUNCE_FAILED',
+        message: '公告发布失败，请稍后重试'
+      };
+    }
+    try {
+      await db.createCollection(ANNOUNCEMENTS);
+      const retry = await db.collection(ANNOUNCEMENTS).add({ data: data });
+      id = (retry && retry._id) || '';
+    } catch (retryErr) {
+      return {
+        ok: false,
+        code: errCodeOf(retryErr) || 'ANNOUNCE_FAILED',
+        message: '公告发布失败：请在控制台确认 announcements 集合已创建',
+      };
+    }
+  }
+
+  const logged = await writeLog(db, adminOpenid, 'publishAnnouncement', id, {
+    title: title,
+    contentLength: content.length
+  });
+
+  return { ok: true, id: id, createTime: data.createTime, logged: logged };
 }
 
 /* ---------------- 入口 ---------------- */
@@ -589,6 +755,7 @@ exports.main = async (event) => {
   if (action === 'violate') return handleViolate(db, openid, payload);
   if (action === 'searchUser') return handleSearchUser(db, payload);
   if (action === 'unbind') return handleUnbind(db, openid, payload);
+  if (action === 'publishAnnouncement') return handlePublishAnnouncement(db, openid, payload);
 
   return { ok: false, code: 'UNKNOWN_ACTION', message: '未知 action：' + action };
 };

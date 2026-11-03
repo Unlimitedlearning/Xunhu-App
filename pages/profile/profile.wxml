@@ -25,7 +25,7 @@
 
     <!-- 资料未完善：先提示，避免发布/申请时找不到展示名或联系方式 -->
     <view class="notice-card" wx:if="{{!isProfileReady}}">
-      昵称、学号与联系方式都填好并保存后，才能在大厅发布需求、申请他人需求（否则队友无法联系您）。
+      昵称、真实姓名、学号与联系方式都填好并保存后，才能在大厅发布需求、申请他人需求（否则队友无法联系您）。
     </view>
 
     <!-- 简历引导：这份描述会公开在详情页，写清楚才有人敢点「申请加入」 -->
@@ -43,6 +43,16 @@
              maxlength="20"
              value="{{nickname}}"
              bindinput="onNicknameInput" />
+
+      <view class="section-title section-title-gap">真实姓名<text class="required">*</text><text class="badge-private">仅用于组队沟通背书</text></view>
+      <input class="text-input {{isRealNameBound ? 'text-input-locked' : ''}}"
+             disabled="{{isRealNameBound}}"
+             placeholder="填写真实姓名（2-4 个汉字）"
+             maxlength="4"
+             value="{{realName}}"
+             bindinput="onRealNameInput" />
+      <text class="tip" wx:if="{{isRealNameBound}}">已绑定，不可修改</text>
+      <text class="tip">{{realNameTip}}</text>
 
       <view class="section-title section-title-gap">学号<text class="required">*</text></view>
       <input class="text-input {{isStudentIdBound ? 'text-input-locked' : ''}}"
@@ -121,8 +131,17 @@
 
   </block>
 
-  <!-- 底部菜单：意见反馈与帮助（未登录也可见，邮箱是唯一的对外反馈渠道） -->
+  <!-- 底部菜单：消息中心（含红点） + 意见反馈与帮助（邮箱是唯一的对外反馈渠道） -->
   <view class="menu-card">
+    <view class="menu-item" hover-class="menu-item-hover" hover-stay-time="80" bindtap="onMessageTap">
+      <view class="menu-label-wrap">
+        <text class="menu-label">消息中心</text>
+        <!-- 红点：有未读个人通知，或最新公告比本地 lastReadMessageTime 新 -->
+        <view class="menu-dot" wx:if="{{hasUnreadMessage}}"></view>
+      </view>
+      <text class="menu-arrow">›</text>
+    </view>
+    <view class="menu-divider"></view>
     <view class="menu-item" hover-class="menu-item-hover" hover-stay-time="80" bindtap="onFeedbackTap">
       <text class="menu-label">意见反馈与帮助</text>
       <text class="menu-arrow">›</text>

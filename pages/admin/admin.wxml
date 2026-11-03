@@ -128,4 +128,37 @@
     </view>
   </scroll-view>
 
+  <!-- ============ Tab 3：发布公告 ============ -->
+  <scroll-view class="scrollarea" scroll-y wx:if="{{activeTab === 'announce'}}">
+    <view class="container">
+
+      <view class="hint">公告发布后会出现在所有用户的「消息中心」顶部（标题前带 📢），并让个人页亮红点。公告不会给每个人单独写一条通知，所以内容请一次说清。</view>
+
+      <view class="form-card">
+        <view class="form-label">公告标题<text class="form-required">*</text></view>
+        <input class="form-input"
+               placeholder="一句话说明，如「内测开始，欢迎反馈」"
+               maxlength="{{announceTitleMax}}"
+               value="{{announceTitle}}"
+               bindinput="onAnnounceTitleInput" />
+        <view class="form-counter">{{announceTitle.length}}/{{announceTitleMax}}</view>
+
+        <view class="form-label form-label-gap">公告内容<text class="form-required">*</text></view>
+        <textarea class="form-textarea"
+                  placeholder="写清楚时间、范围、需要同学做什么"
+                  maxlength="{{announceContentMax}}"
+                  value="{{announceContent}}"
+                  bindinput="onAnnounceContentInput"></textarea>
+        <view class="form-counter">{{announceContent.length}}/{{announceContentMax}}</view>
+
+        <view class="error-card" wx:if="{{announceError}}">{{announceError}}</view>
+
+        <view class="btn btn-primary btn-block {{announceLoading ? 'btn-disabled' : ''}}"
+              hover-class="btn-hover"
+              bindtap="onPublishAnnouncementTap">{{announceLoading ? '发布中…' : '发布全体公告'}}</view>
+      </view>
+
+    </view>
+  </scroll-view>
+
 </view>

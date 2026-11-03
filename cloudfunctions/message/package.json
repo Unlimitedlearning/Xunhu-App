@@ -1,0 +1,9 @@
+{
+  "name": "message",
+  "version": "1.0.0",
+  "description": "消息中心：个人通知 + 全体公告的读取与已读标记（客户端零权限）",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}

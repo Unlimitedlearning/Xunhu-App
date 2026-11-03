@@ -47,7 +47,7 @@ app.js                     启动：wx.cloud.init(CLOUD_ENV) + store.init() 预�
 
 | 集合 | 客户端权限 | 写入方 |
 |---|---|---|
-| `posts` | 所有用户可读（**write = false**，客户端不得写） | `publish`（新建）/ `heat`（热度）/ `report`（转审核）/ `admin`（下架·恢复）/ `post`（结束·删除） |
+| `posts` | **所有用户不可读写**（v1.5.0：读也只走 `post` 云函数） | 读：`post`（list / get）；写：`publish`（新建）/ `heat`（热度）/ `report`（转审核）/ `admin`（下架·恢复）/ `post`（结束·删除） |
 | `post_contacts` | 所有用户不可读写 | 仅 `publish`（新建时写）/ `post`（按关系下发 · 迁移） |
 | `applications` | **所有用户不可读写**（读也走云函数，不再保留自定义 read 规则） | 仅 `application` 云函数 |
 | `users` | 所有用户不可读写 | 仅 `user` / `application`（联查读）/ `report`·`admin`（风控写） |
@@ -134,7 +134,7 @@ app.js                     启动：wx.cloud.init(CLOUD_ENV) + store.init() 预�
 
 | 集合 | 存什么 | 关键字段 | 客户端权限 |
 |---|---|---|---|
-| `posts` | 所有寻呼 / 组队 / 自荐 / 搭子帖子（大厅数据源） | `_id`(=帖子 id) / `category` / `title` / `content` / `tags[]` / `authorOpenid` / `authorName` / `status`(draft·auditing·active·ended) / `heat` / `reportWeight` / `auditDismissed` / `secCheck` / `createTime` / `endTime`（**无 `contact`**） | 所有用户可读，write = false |
+| `posts` | 所有寻呼 / 组队 / 自荐 / 搭子帖子（大厅数据源） | `_id`(=帖子 id) / `category` / `title` / `content` / `tags[]` / `authorOpenid` / `authorName` / `status`(draft·auditing·active·ended) / `heat` / `reportWeight` / `auditDismissed` / `secCheck` / `createTime` / `endTime`（**无 `contact`**） | 所有用户不可读写（读走 `post` 云函数 list / get） |
 | `post_contacts` | 帖子联系方式（v1.3.0 从 posts 拆出） | `_id`(=postId) / `_openid` / `authorOpenid` / `contact` / `createTime` | 所有用户不可读写（仅云函数 `publish` / `post`） |
 | `applications` | 报名（申请）流水：谁申请了哪个帖子、当前状态 | `postId` / `applicantId` / `receiverId` / `applicantName` / `applicantResume` / `applyNote` / `status`(pending·accepted·rejected) / `createTime` / `statusUpdateTime`（**新文档不存 `applicantContact` / `applicantStudentId`**） | 所有用户不可读写 |
 | `users` | 用户资料与账号状态（一个 openid 一条） | `_openid` / `nickname` / `studentId` / `resume` / `contact` / `role`(user·banned·admin) / `warningCount` / `createTime` / `updateTime` | 所有用户不可读写 |

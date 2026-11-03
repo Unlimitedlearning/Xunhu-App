@@ -32,6 +32,17 @@ function formatReviewTime(timestamp) {
   return date.getFullYear() + '-' + (month < 10 ? '0' + month : month) + '-' + (day < 10 ? '0' + day : day);
 }
 
+/**
+ * 账号信用文案：0 次违规 = 绿色「信用良好」；>= 1 次 = 橙红警告并带出封号阈值
+ * warningCount 只能由 admin 云函数（确认违规 / 封号）或控制台写入，前端只负责展示。
+ */
+function buildCreditText(warningCount) {
+  const count = Number(warningCount) || 0;
+  if (count <= 0) return '🟢 信用良好（0 次违规）';
+  const threshold = constants.WARNING_BAN_THRESHOLD;
+  return '⚠️ 违规警告（当前 ' + count + '/' + threshold + ' 次，满 ' + threshold + ' 次封号）';
+}
+
 Page({
   data: {
     isLogin: false,
@@ -40,6 +51,8 @@ Page({
     realName: '',
     isRealNameBound: false, // 云端已有合法真实姓名 -> 输入框禁用、不可修改
     realNameTip: constants.REAL_NAME_TIP,
+    // 学号说明（法律口径）：与协议 1.3 同句，来源是 constants.STUDENT_ID_TIP
+    studentIdTip: constants.STUDENT_ID_TIP,
     studentId: '',
     isStudentIdBound: false, // 云端已有合法学号 -> 输入框禁用、不可修改
     avatarText: '?',
@@ -51,12 +64,14 @@ Page({
     // 消息中心红点：有未读个人通知，或最新公告比本地 lastReadMessageTime 新
     hasUnreadMessage: false,
 
+    // ---- 账号信用（users.warningCount，只读展示）----
+    warningCount: 0,
+    creditGood: true,               // 0 次违规 = 信用良好（绿色），否则橙红警告
+    creditText: buildCreditText(0), // 完整文案（含 emoji），wxml 直接渲染
+
     // ---- 收到的评价（reviews 集合，全部匿名） ----
-    reviewTotal: 0,                        // 收到多少条评价（含没写文字的）
-    reviewGoodCount: 0,                    // 其中满意（rating = 1）的条数
-    reviewRate: 0,                         // 好评率百分比，由云端算好
-    showReviewRate: false,                 // 总数 >= 3 才展示好评率，否则只显示「满意度统计中...」
-    reviewPendingText: constants.REVIEW_PENDING_TEXT,
+    showReviewRate: false,                 // 总数 >= 3 才展示好评率，否则只显示「满意度统计中...（n/3 条）」
+    reviewRateText: constants.formatReviewRateText(0, 0), // 「好评率 95%（共 20 条评价）」唯一文案来源
     reviewEmptyText: '还没有收到评价',
     reviews: []                            // [{ id, fromName: '某同学', content, contextSnapshot, ratingText, isGood, createTime }]
   },
@@ -99,10 +114,11 @@ Page({
         isProfileReady: false,
         isAdmin: false,
         hasUnreadMessage: false,
-        reviewTotal: 0,
-        reviewGoodCount: 0,
-        reviewRate: 0,
+        warningCount: 0,
+        creditGood: true,
+        creditText: buildCreditText(0),
         showReviewRate: false,
+        reviewRateText: constants.formatReviewRateText(0, 0),
         reviewEmptyText: '还没有收到评价',
         reviews: []
       });
@@ -116,6 +132,8 @@ Page({
     }
 
     const profile = store.getProfile();
+    // 违规次数只读：缺失 / 脏数据一律按 0 次处理，不让页面出现 NaN
+    const warningCount = Number(profile.warningCount) || 0;
 
     this.setData({
       isLogin: true,
@@ -132,7 +150,11 @@ Page({
       // 严格判定：昵称 + 联系方式 + 学号格式（与 guard / 发布 / 申请同一套规则）
       isProfileReady: store.isProfileReady(),
       // 管理员入口：role 由云端 users 集合提供，客户端只能读
-      isAdmin: store.isAdmin()
+      isAdmin: store.isAdmin(),
+      // 账号信用：warningCount 同样来自云端 users（写入只走 admin 云函数 / 控制台）
+      warningCount: warningCount,
+      creditGood: warningCount <= 0,
+      creditText: buildCreditText(warningCount)
     });
 
     // 评价单独拉：reviews 拉取失败不影响资料表单可用
@@ -177,10 +199,9 @@ Page({
       });
 
     this.setData({
-      reviewTotal: total,
-      reviewGoodCount: stat.goodCount || 0,
-      reviewRate: stat.rate || 0,
       showReviewRate: showRate,
+      // 好评率与评价次数统一成一句（与详情页发布者名片同一个函数，字段口径对齐）
+      reviewRateText: constants.formatReviewRateText(total, stat.rate || 0),
       reviewEmptyText: total > 0 ? '收到的评价暂未填写文字' : '还没有收到评价',
       reviews: reviews
     });
@@ -301,7 +322,7 @@ Page({
     // 学号：必填 + 广工 10 位格式（云函数里还有同样一道，防绕过）
     const studentId = (this.data.studentId || '').trim();
     if (!studentId) {
-      wx.showToast({ title: '请填写学号，用于本校学生身份认证', icon: 'none' });
+      wx.showToast({ title: '请填写学号，仅用于账号唯一性校验', icon: 'none' });
       return;
     }
     if (!STUDENT_ID_REGEX.test(studentId)) {

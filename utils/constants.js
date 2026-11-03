@@ -142,6 +142,24 @@ const REVIEW_MIN_COUNT = 3;             // 收到评价少于 3 条时只显示�
 const REVIEW_PENDING_TEXT = '满意度统计中...';
 const REVIEW_ANONYMOUS_NAME = '某同学';  // 评价人一律匿名展示，不暴露昵称/openid
 
+/**
+ * 好评率统一文案：个人页「收到的评价」与详情页「发布者名片」共用同一句，
+ * 保证两处展示的次数 / 百分比口径完全一致（只改这里，两处同时生效）。
+ *   满 REVIEW_MIN_COUNT 条 -> 「好评率 95%（共 20 条评价）」
+ *   不足但有数据       -> 「满意度统计中...（2/3 条）」
+ *   一条都没有         -> 「满意度统计中...」
+ */
+function formatReviewRateText(total, rate) {
+  const count = Number(total) || 0;
+  if (count >= REVIEW_MIN_COUNT) {
+    return '好评率 ' + (Number(rate) || 0) + '%（共 ' + count + ' 条评价）';
+  }
+  if (count > 0) {
+    return REVIEW_PENDING_TEXT + '（' + count + '/' + REVIEW_MIN_COUNT + ' 条）';
+  }
+  return REVIEW_PENDING_TEXT;
+}
+
 // 详情页「发布者名片」：简历默认只显示 3 行，超过这个字数就出现「展开全文」
 const AUTHOR_RESUME_PREVIEW_CHARS = 60;
 const AUTHOR_RESUME_EMPTY_TEXT = '这位同学还没有填写简历 / 技能描述';
@@ -294,15 +312,25 @@ function checkTextViolation(text) {
   return { pass: true };
 }
 
+/* ---------------- 身份校验免责声明（v1.5.0，法律口径唯一来源） ----------------
+ * 背景：平台没有接入学校学籍系统，也不具备任何官方身份核验能力 ——
+ *   学号只校验「格式 + 是否已被占用」，真实姓名只校验「2-4 个汉字」，
+ *   两者都只是输入格式约束，**不构成身份认证**。
+ * 因此所有对外文案（协议 / 个人页 / 提示框）一律引用这一句，
+ * 禁止再出现「实名认证」「官方认证」「身份认证」「学籍认证」等表述。 */
+const IDENTITY_DISCLAIMER = '平台仅对学号和姓名进行格式校验，不代表官方学籍认证。平台不核验用户真实身份，用户需自行判断合作风险。';
+// 个人页「学号」输入框下方的说明（与协议 1.3 同句，改这里两处同时生效）
+const STUDENT_ID_TIP = IDENTITY_DISCLAIMER;
+
 /* ---------------- 真实姓名背书（v1.4.0） -------------
- * 用途：组队沟通时的身份背书（「这位同学确实是本人」），不做官方实名认证。
+ * 用途：组队沟通时的自我声明（「我确实用了真名」），不做官方实名认证。
  * 规则：2-4 个纯中文汉字，必填；绑定后不可自行修改（云端强制回落旧值，与学号锁同一套思路）。
  * 隐私：只在 users 集合私有存储 —— 不展示在任何页面、不写进帖子 / 申请 / 评价、不下发给第三方。
  * 云函数 cloudfunctions/user/index.js 里有一份同值正则，改这里要同步改。
  */
 const REAL_NAME_REGEX = /^[\u4e00-\u9fa5]{2,4}$/;
 // 输入框下方的浅灰小字（口径：只做格式校验，不认证，不公开）
-const REAL_NAME_TIP = '平台仅进行格式校验，不代表官方认证；绝不向任何第三方公开。';
+const REAL_NAME_TIP = '仅做格式校验，不代表官方认证；绝不向任何第三方公开。';
 const REAL_NAME_REQUIRED_MESSAGE = '请填写真实姓名（仅用于组队沟通背书）';
 const REAL_NAME_INVALID_MESSAGE = '请输入 2-4 个汉字的真实姓名';
 
@@ -317,6 +345,18 @@ const ANNOUNCEMENT_ICON = '📢';    // 公告标题前的图标（唯一来源�
 const MESSAGE_EMPTY_TEXT = '暂无通知';
 const ANNOUNCEMENT_TITLE_MAX = 30;  // 公告标题上限（后台发布前后端同值校验）
 const ANNOUNCEMENT_CONTENT_MAX = 200; // 公告正文上限
+
+/* ---------------- 一次性订阅消息（v1.5.0） ----------------
+ * 模板 ID 到「微信公众平台 → 功能 → 订阅消息 → 我的模板」申请后填到下面两个变量；
+ * 留空时 utils/subscribe.js 直接跳过授权（不报错、不弹窗），申请 / 同意照常完成。
+ *
+ * 【重要】授权只是「允许发一条」，真正把消息发出去还必须由服务端调用：
+ *   cloud.openapi.subscribeMessage.send({ touser, template_id, page, data })
+ * 所以模板 ID 填好之后，还需要在 cloudfunctions/application 里补一段发送逻辑，
+ * 否则用户授权了也永远收不到通知（本次只做前端授权，未改云函数）。
+ */
+const TMPL_APPLY_ID = '';  // 申请人点「提交申请」时订阅：申请结果通知（发给申请人自己）
+const TMPL_ACCEPT_ID = ''; // 发帖人点「同意申请」时订阅：新申请提醒（发给发帖人自己）
 
 // 学号校验：广工 10 位学号，以 31 开头（31 + 8 位数字）
 // 同一份规则必须在两处生效：
@@ -372,6 +412,7 @@ module.exports = {
   REVIEW_MIN_COUNT,
   REVIEW_PENDING_TEXT,
   REVIEW_ANONYMOUS_NAME,
+  formatReviewRateText,
   REVIEW_RATING_OPTIONS,
   AUTHOR_RESUME_PREVIEW_CHARS,
   AUTHOR_RESUME_EMPTY_TEXT,
@@ -395,6 +436,10 @@ module.exports = {
   REAL_NAME_TIP,
   REAL_NAME_REQUIRED_MESSAGE,
   REAL_NAME_INVALID_MESSAGE,
+  IDENTITY_DISCLAIMER,
+  STUDENT_ID_TIP,
+  TMPL_APPLY_ID,
+  TMPL_ACCEPT_ID,
   MESSAGE_LIST_LIMIT,
   ANNOUNCEMENT_LIST_LIMIT,
   ANNOUNCEMENT_ICON,

@@ -22,9 +22,8 @@
   <view class="detail-card author-card">
     <view class="author-card-head">
       <text class="author-card-title">发布者信息</text>
-      <!-- 评价满 3 条才给好评率，不足时只是“统计中” -->
-      <view class="author-rate" wx:if="{{authorCard.showRate}}">好评率 {{authorCard.reviewRate}}%</view>
-      <view class="author-rate author-rate-pending" wx:else>{{authorCard.reviewPendingText}}</view>
+      <!-- 好评率 + 评价次数统一文案（与「我的」页同一套规则，见 constants.formatReviewRateText） -->
+      <view class="author-rate {{authorCard.showRate ? '' : 'author-rate-pending'}}">{{authorCard.reviewRateText}}</view>
     </view>
 
     <!-- 头像 + 昵称 -->
@@ -32,7 +31,7 @@
       <view class="author-avatar">{{authorCard.avatarText}}</view>
       <view class="author-info">
         <view class="author-name">{{authorCard.nickname ? authorCard.nickname : '这位同学'}}</view>
-        <view class="author-sub">{{reviewSubText}}</view>
+        <view class="author-sub" wx:if="{{reviewSubText}}">{{reviewSubText}}</view>
       </view>
     </view>
 

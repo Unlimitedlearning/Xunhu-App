@@ -9,13 +9,17 @@
 //     title / content（绕过词库与机审已通过的结论）
 //     heat（刷最热榜）、authorOpenid（冒用他人身份）
 //   也就是说：风控在「作者本人」这个最需要约束的角色上完全失效。
-//   现在 posts 对客户端只读（控制台把 posts 权限收成「所有用户可读」），
-//   状态变更只能走这里，服务端校验 authorOpenid === 当前 openid，并且只写 status / endTime。
+//   现在 posts 对客户端零读写（控制台把 posts 权限收成「所有用户不可读写」），
+//   读取走本函数的 list / get，状态变更走 end，服务端校验 authorOpenid === 当前 openid，
+//   并且只写 status / endTime。
 //
 // 同时收口联系方式（P0-2）：contact 已从 posts 迁到 post_contacts（客户端「所有用户不可读写」），
 //   只有本函数按关系下发 —— 作者本人，或该帖子上有 accepted 申请的人。
 //
 // action 一览：
+//   { action: 'list', limit }            大厅列表（客户端对 posts 零权限，只能由这里下发）
+//                                         -> { ok: true, list: [...] }（白名单字段）
+//   { action: 'get', postId }             单条帖子（分享直达 / 缓存没命中）-> { ok: true, post }
 //   { action: 'end', postId }            结束自己的帖子 -> { ok: true, status: 'ended', endTime }
 //   { action: 'delete', postId }         删除自己的帖子（连带 post_contacts）-> { ok: true }
 //   { action: 'contact', postId }        取联系方式（作者 / 已同意申请人）-> { ok: true, contact }
@@ -102,6 +106,62 @@ async function hasAcceptedApplication(db, postId, openid) {
   }
   return false;
 }
+
+/* ---------------- action: list / get（客户端对 posts 零权限，列表只能由这里下发） ----------------
+ * posts 权限收成「所有用户不可读写」之后，大厅与详情页的读取全部收拢到这里。
+ * 为什么用白名单而不是原样返回整条文档：
+ *   以前客户端一次 get 能把整条文档捞走 —— 历史遗留的 contact（迁移前的老帖子）
+ *   以及风控字段（reportWeight / secCheck / auditReason）全都跟着下发。
+ *   现在只给页面渲染真正需要的字段，以后再往文档里加什么私密字段也不会自动泄露。 */
+
+const CLIENT_POST_FIELDS = [
+  'category', 'title', 'content', 'tags', 'status', 'heat',
+  'createTime', 'endTime', 'authorOpenid', 'authorName'
+];
+
+const LIST_LIMIT_DEFAULT = 20; // 与小程序端 constants.POSTS_FETCH_LIMIT 同值
+const LIST_LIMIT_MAX = 100;    // 服务端单次上限（内测降本：不让一次调用拖回 1000 条）
+
+function toClientPost(doc) {
+  const raw = doc || {};
+  const post = { _id: String(raw._id || '') };
+  for (let i = 0; i < CLIENT_POST_FIELDS.length; i++) {
+    const key = CLIENT_POST_FIELDS[i];
+    if (raw[key] !== undefined) post[key] = raw[key];
+  }
+  // 老文档可能只写了 _openid 没写 authorOpenid：补上，否则详情页判不出「是不是我发的」
+  if (!post.authorOpenid && raw._openid) post.authorOpenid = String(raw._openid);
+  return post;
+}
+
+// 列表：按 createTime 倒序取最新 N 条（状态过滤交给前端 Tab，减少一次查询维度）
+async function handleList(db, event) {
+  const input = Number(event && event.limit);
+  const limit = Math.min(Math.max(input || LIST_LIMIT_DEFAULT, 1), LIST_LIMIT_MAX);
+
+  let rows = [];
+  try {
+    const res = await db.collection(POSTS).orderBy('createTime', 'desc').limit(limit).get();
+    rows = (res && res.data) || [];
+  } catch (err) {
+    if (isMissingCollection(err)) return { ok: true, list: [] };
+    console.error('[post][list] 查询失败 code=' + errCodeOf(err) + '：', err && err.message);
+    return { ok: false, code: errCodeOf(err) || 'LIST_FAILED', message: '加载失败，请稍后重试' };
+  }
+
+  return { ok: true, list: rows.map(toClientPost) };
+}
+
+// 单条：分享直达 / 缓存里没有时按 _id 直取（不受分页与排序影响）
+async function handleGet(db, event) {
+  const postId = String((event && event.postId) || '').trim();
+  if (!postId) {
+    return { ok: false, code: 'POST_ID_REQUIRED', message: '缺少帖子信息，请返回大厅重试' };
+  }
+
+  const post = await getPost(db, postId);
+  // 不存在不当错误：详情页展示「信息不存在」即可，不要用一个失败弹窗拦住用户
+  return { ok: true, post: post ? toClientPost(post) : null };}
 
 /* ---------------- action: end ---------------- */
 
@@ -322,6 +382,9 @@ exports.main = async (event) => {
     if (action === 'end') return await handleEnd(db, openid, event);
     if (action === 'delete') return await handleDelete(db, openid, event);
     if (action === 'contact') return await handleContact(db, openid, event);
+    // 读取（posts 对客户端零权限，只能从这里走）
+    if (action === 'list') return await handleList(db, event);
+    if (action === 'get') return await handleGet(db, event);
   } catch (err) {
     console.error('[post] action=' + action + ' 未捕获异常 code=' + errCodeOf(err) + '：', err);
     return { ok: false, code: errCodeOf(err) || 'INTERNAL_ERROR', message: '服务异常，请稍后重试' };

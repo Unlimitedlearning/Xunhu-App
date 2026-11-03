@@ -1,7 +1,7 @@
 // cloudfunctions/heat/index.js
 // 作用：帖子热度原子自增。
-// 为什么必须走云函数：posts 权限是「所有用户可读、仅创建者可写」，
-// 客户端改别人的帖子会被拒（-502003 database permission denied），而热度恰恰发生在别人的帖子上。
+// 为什么必须走云函数：posts 对客户端零读写（v1.5.0 起连读也走云函数），
+// 客户端改别人的帖子会被拒，而热度恰恰发生在别人的帖子上。
 // 另外 _.inc 是原子操作，两个人同时浏览不会互相覆盖。
 
 const cloud = require('wx-server-sdk');

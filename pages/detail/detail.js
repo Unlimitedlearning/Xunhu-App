@@ -1,9 +1,11 @@
 // pages/detail/detail.js
 // 详情页：读取帖子完整内容，处理「申请加入」与「举报」
-// 数据源：云数据库（经 utils/store 的缓存层）
+// 数据源：云函数 post（action: get / contact）+ utils/store 的缓存层
+//         （posts 集合对客户端零权限，本页不直接访问数据库）
 
 const store = require("../../utils/store");
 const constants = require("../../utils/constants");
+const subscribe = require("../../utils/subscribe");
 
 const CATEGORY_MAP = constants.CATEGORY_MAP;
 const POST_STATUS_MAP = constants.POST_STATUS_MAP;
@@ -177,34 +179,57 @@ Page({
 
   /**
    * 发布者名片：一次云函数同时拿 users 简历 + reviews 匿名统计
+   * 首屏走本地 Storage 快照（cache_author_{authorOpenid}）秒开，后台再静默拉云端覆盖：
+   * 缓存在前、云端在后，用户先看到内容，再静默校正，与大厅列表同一套思路。
    * @param {object} post 当前帖子（用它的 id 让云端自己查 authorOpenid，不信客户端传的身份）
    */
   loadAuthorCard: async function (post) {
     if (!post) return;
 
-    let card = store.emptyAuthorCard();
-
     // 本地草稿不是云端文档（没有 _id / authorOpenid），直接渲染兜底名片，
     // 省一次必然返回 AUTHOR_REQUIRED 的云调用
     if (post.status === 'draft' || !post.authorOpenid) {
-      this.renderAuthorCard(card, post);
+      this.renderAuthorCard(store.emptyAuthorCard(), post);
       return;
     }
 
+    const authorOpenid = post.authorOpenid;
+
+    // 1) 首屏：先拿缓存 setData（同步，不产生请求）
+    const cachedCard = store.readAuthorCardCache(authorOpenid);
+    if (cachedCard) this.renderAuthorCard(cachedCard, post, { keepExpanded: true });
+
+    // 2) 静默更新：后台拉最新简历 / 评价
+    let card;
     try {
       card = await store.fetchAuthorProfile({
         postId: post.id,
-        authorOpenid: post.authorOpenid
+        authorOpenid: authorOpenid
       });
     } catch (err) {
-      // store 已经兜底返回空名片，这里只是双保险
-      console.warn('[detail] 发布者名片加载失败，已降级为空名片：', err);
+      // store 已经兜底返回空名片，这里只是双保险：失败就保留首屏缓存
+      console.warn('[detail] 发布者名片加载失败，已保留缓存名片：', err);
+      return;
     }
 
-    this.renderAuthorCard(card, post);
+    // ready = false 说明是降级兜底（云函数未部署 / 网络失败 / 无发帖人），
+    // 这种结果不能覆盖已有缓存，否则会把原本能看到的名片刷成空白
+    if (!card || !card.ready) {
+      if (!cachedCard) this.renderAuthorCard(store.emptyAuthorCard(), post);
+      return;
+    }
+
+    this.renderAuthorCard(card, post, { keepExpanded: true });
+    store.writeAuthorCardCache(authorOpenid, card);
   },
 
-  renderAuthorCard: function (card, post) {
+  /**
+   * 把名片渲染到页面
+   * @param {object} card store 归一化后的名片（已含昵称 / 简历 / 好评率文案）
+   * @param {object} post 当前帖子（只用于昵称兜底）
+   * @param {{keepExpanded?:boolean}} options keepExpanded：静默更新时不把已展开的简历收回去
+   */
+  renderAuthorCard: function (card, post, options) {
     const source = card || store.emptyAuthorCard();
     // 昵称兜底：名片里没有就用帖子上记的 authorName（旧帖 / 名片接口未部署时仍能显示名字）
     const nickname = (source.nickname || '').trim() || ((post && post.authorName) || '');
@@ -212,6 +237,8 @@ Page({
     const reviews = (source.reviews || []).map(function (item) {
       return Object.assign({}, item, { createTimeText: formatReviewTime(item.createTime) });
     });
+    // 3 行大约 60 个字，超过这个长度才给「展开全文」，避免短简历也挂个没用的按钮
+    const resumeLong = resume.length > RESUME_PREVIEW_CHARS;
 
     this.setData({
       authorCard: Object.assign({}, source, {
@@ -222,22 +249,18 @@ Page({
         reviews: reviews
       }),
       reviewSubText: this.buildReviewSubText(source),
-      // 3 行大约 60 个字，超过这个长度才给「展开全文」，避免短简历也挂个没用的按钮
-      resumeLong: resume.length > RESUME_PREVIEW_CHARS,
-      resumeExpanded: false
+      resumeLong: resumeLong,
+      // 只有「本来就是展开状态 + 静默更新」才保留展开，其余情况默认收起
+      resumeExpanded: !!(options && options.keepExpanded) && resumeLong && !!this.data.resumeExpanded
     });
   },
 
-  // 满意度下面那行小字：满 3 条给明细，不足 3 条只说「已收到几条」
+  // 昵称下面那行小字：好评率与总条数已在右上角徽章展示（constants.formatReviewRateText），
+  // 这里只补一句「其中几条满意」；一条评价都没收到时返回空串，wxml 整行不渲染
   buildReviewSubText: function (card) {
     const total = card.reviewTotal || 0;
-    if (card.showRate) {
-      return '共 ' + total + ' 条评价 · 满意 ' + (card.reviewGoodCount || 0) + ' 条';
-    }
-    if (total > 0) {
-      return '已收到 ' + total + ' 条评价，满 ' + constants.REVIEW_MIN_COUNT + ' 条展示满意度';
-    }
-    return '还没有收到评价';
+    if (!total) return '';
+    return '其中满意 ' + (card.reviewGoodCount || 0) + ' 条';
   },
 
   // 简历展开 / 收起（只切换样式，不重新请求）
@@ -385,15 +408,21 @@ Page({
       return;
     }
 
-    // 2. 弹窗填写申请附言（必填）—— 附言会直接展示在发帖人的任务页
+    // 2. 一次性订阅消息授权：
+    //    位置很关键 —— 必须紧跟点击、在本轮同步代码里发起（上面全是同步校验，没有 await），
+    //    否则微信会判定「非用户点击触发」直接 fail（errCode 20004）。
+    //    返回值用户看不到也不影响流程：拒绝授权只是收不到通知，绝不能卡死业务。
+    await subscribe.requestApplySubscribe();
+
+    // 3. 弹窗填写申请附言（必填）—— 附言会直接展示在发帖人的任务页
     const applyNote = await this.askApplyNote();
     if (!applyNote) return;
 
-    // 3. 再弹一次警告：联系方式必须真实，虚假联系会被封禁（用户确认后才落库）
+    // 4. 再弹一次警告：联系方式必须真实，虚假联系会被封禁（用户确认后才落库）
     const confirmed = await this.confirmApply();
     if (!confirmed) return;
 
-    // 4. 写库：只传 postId + applyNote，昵称 / 学号 / 联系方式 / 简历 由云函数从 users 取
+    // 5. 写库：只传 postId + applyNote，昵称 / 学号 / 联系方式 / 简历 由云函数从 users 取
     //    （以前是前端自己拼快照：改包就能冒用他人昵称，而且字段缺漏导致发帖人看不到信息）
     try {
       await store.addApplication({ postId: post.id, applyNote: applyNote });
@@ -406,7 +435,7 @@ Page({
       return;
     }
 
-    // 4. 热度 +5：同一用户对同一帖子只贡献一次申请热度
+    // 6. 热度 +5：同一用户对同一帖子只贡献一次申请热度
     let heat = store.resolveHeat(post);
     if (store.claimHeatOnce(post.id, openid, store.HEAT_ACTION.APPLY)) {
       heat += 5;

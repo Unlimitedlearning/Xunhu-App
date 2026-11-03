@@ -12,6 +12,7 @@ const store = require("../../utils/store");
 const guard = require("../../utils/guard");
 const constants = require("../../utils/constants");
 const tabBadge = require("../../utils/tabBadge");
+const subscribe = require("../../utils/subscribe");
 
 // ==================== DEV_DEBUG 排障开关 ====================
 // true  = 任务页顶部显示一行调试信息（openid / 帖子数 / 申请数 / 拉取错误），
@@ -353,6 +354,14 @@ Page({
     // 防连点：同一次请求没回来之前不发第二次（避免 accepted 之后又发 rejected）
     if (this.handlingId) return;
     this.handlingId = id;
+
+    // 【一次性订阅消息】同意前先申请授权（模板 TMPL_ACCEPT_ID：有新申请时提醒发帖人自己）。
+    // 位置很关键：必须在本轮同步执行栈里发起（上面全是同步校验），隔一个 await 再调
+    // 会被微信判为「非用户点击触发」直接 fail。
+    // 拒绝授权 / 未配置模板 / 接口报错都只是 false，不拦截下面同意流程。
+    if (action === 'accepted') {
+      await subscribe.requestAcceptSubscribe();
+    }
 
     wx.showLoading({ title: '处理中...', mask: true });
 

@@ -8,7 +8,10 @@
 //   2) 写：savePost / endPost / addApplication / updateApplicationStatus / persistHeat / submitReport / submitReview
 //      都返回 Promise，调用处必须 await。
 //   3) 热度：走云函数 heat 做原子自增（别人的帖子客户端没有写权限，必须走服务端）。
-//   4) 帖子状态（结束 / 删除）走云函数 post，posts 对客户端只读（v1.3.0）
+//   4) 帖子读写全部走云函数 post（v1.5.0）：posts 集合已设为「所有用户不可读写」，
+//      客户端不再有任何直接访问数据库的代码 —— 列表走 action:'list'，单条走 action:'get'，
+//      结束 / 删除 / 取联系方式走 end / delete / contact。
+//      （之前是客户端直读 posts：一次 get 能把整条文档连同历史遗留的 contact 一起捞走）
 //   4) 发布：走云函数 publish（内容安全机审 + status 直接 active，服务端定 status/authorName）；
 //      举报：走云函数 report（写 reports 集合 + 帖子改 auditing）；
 //      申请：走云函数 application（apply / updateStatus / list，服务端校验 receiverId 防越权，
@@ -19,21 +22,17 @@
 //   5) id 统一等于云文档 _id；作者身份用 authorOpenid 字段（真实帖子的值 = 当前 openid）。
 
 const constants = require('./constants');
-const mockData = require('./mockData');
 
 const STORAGE_KEYS = constants.STORAGE_KEYS;
 const COLLECTIONS = constants.COLLECTIONS;
 const CLOUD_FUNCTIONS = constants.CLOUD_FUNCTIONS;
 
-const PAGE_SIZE = 20;    // 小程序端单次 get 上限就是 20 条
-const MAX_FETCH = 100;   // 单次同步最多拉 100 条，再多要走业务分页
 const DRAFT_ID = 'local_draft';
 
-// 首次运行且 posts 集合为空时，把 mockData 灌进云端，保证演示时大厅不是空的。
-// 【内测状态】已置 false：内测看到的大厅必须全是真实数据，
-//   否则「张同学 / 李同学 / 林同学」这些假帖子会被灌进云端（且 authorOpenid 是假的，
-//   既结束不了也评价不了，非常难清理）。需要演示数据时再临时改回 true。
-const SEED_DEMO_POSTS = false;
+// 【已删除】SEED_DEMO_POSTS / seedDemoData() / utils/mockData 引用（v1.5.0）：
+//   它当时是客户端直接 col(posts).add() 往云库里灌假数据，既是一个绕开 publish 云函数
+//   的写入通道，也会把 authorOpenid = 'openid_mock_*' 的脏帖子固化到线上（既结束不了
+//   也评价不了）。posts 现在对客户端零权限，这段代码必然报错，一并删掉。
 
 // 内存缓存：页面同步读取的数据源
 const cache = {
@@ -50,18 +49,11 @@ const cache = {
 
 let initPromise = null;
 
-/* ---------------- 基础设施 ---------------- */
-
-function db() {
-  if (!wx.cloud) {
-    throw new Error('当前基础库不支持云开发，请把调试基础库升到 2.2.3 以上');
-  }
-  return wx.cloud.database();
-}
-
-function col(name) {
-  return db().collection(name);
-}
+/* ---------------- 基础设施 ----------------
+ * 注意：这里刻意不提供 db() / col() 之类的数据库直连封装。
+ * v1.5.0 起 posts / applications / post_contacts / users / reports / reviews / messages
+ * 对客户端全部是「所有用户不可读写」，任何一行客户端直连代码都是隐患（改包就能读写）。
+ * 要加新集合的读取，请在对应云函数里加一个 action，不要在这里开直连口子。*/
 
 // openid 只能由云函数下发，客户端拿不到
 async function fetchOpenid() {
@@ -73,38 +65,17 @@ async function fetchOpenid() {
   return openid;
 }
 
-// 分页把集合读全（客户端单次 20 条上限）
-// condition 不为空时会带上 where —— 自定义安全规则的集合必须靠它证明「这条记录我能读」
-// maxFetch：本次最多拉多少条（默认 MAX_FETCH）。posts 已降到 POSTS_FETCH_LIMIT=20，见 pullPosts。
-async function fetchPaged(name, condition, maxFetch) {
-  const stop = Math.min(maxFetch || MAX_FETCH, MAX_FETCH);
-  const list = [];
-  for (let skip = 0; skip < stop; skip += PAGE_SIZE) {
-    let query = col(name);
-    if (condition) query = query.where(condition);
-    const res = await query
-      .orderBy('createTime', 'desc')
-      .skip(skip)
-      .limit(PAGE_SIZE)
-      .get();
-    const rows = (res && res.data) || [];
-    list.push.apply(list, rows);
-    if (rows.length < PAGE_SIZE) break;
-  }
-  return list;
-}
-
-// -502003 的典型原因，直接把排查方向打到控制台，省得靠猜
-// （applications 已改为「客户端不可读」，不再有直读分支，因此这里只剩 posts）
-const PERMISSION_HINTS = {
-  posts: '-502003：①集合不在 CLOUD_ENV 指向的环境里（最常见：控制台建集合的环境和 constants.js 的 env 不是同一个）②posts 权限没生效，应为「所有用户可读」'
-};
-
+// 失败日志：把排查方向直接打到控制台，省得靠猜
 function reportFetchError(name, err) {
   const code = (err && (err.errCode || err.code)) || '';
+  const message = String((err && err.message) || '');
   console.error('[store] 拉取 ' + name + ' 失败 code=' + code + '：', err);
-  if (String(code).indexOf('502003') > -1 && PERMISSION_HINTS[name]) {
-    console.error('[store] ' + PERMISSION_HINTS[name]);
+
+  // posts 现在是客户端零读写、全部由云函数 post 下发，所以这里不再会出现 -502003：
+  // 出现「函数未部署 / 环境不对」时换成了 FUNCTION_CALL_FAILED，两种都给同一句排查提示
+  if (code === 'FUNCTION_CALL_FAILED' || message.indexOf('FUNCTION_NOT_FOUND') > -1 ||
+    message.indexOf('not found') > -1) {
+    console.error('[store] 请确认 cloudfunctions/post 已上传并部署，且与该小程序的云环境一致（constants.CLOUD_ENV）');
     diagnose(name);
   }
 }
@@ -239,11 +210,13 @@ function hydrateFromCache() {
 /* ---------------- 初始化 ---------------- */
 
 // 只拉数据、不触发 ensureInit，避免与 doInit 互相递归
-// maxFetch 默认 POSTS_FETCH_LIMIT=20（内测降本：1 次 get 就够），
-// 需要更多时（比如后台排查）传 { max: 100 }，仍然受 MAX_FETCH 封顶。
+// 唯一通道：云函数 post 的 action:'list'（posts 对客户端零读写，客户端已经没有任何 get 能力）。
+// limit 默认 POSTS_FETCH_LIMIT=20（内测降本：1 次云调用就够），上限由云函数封在 100。
 async function pullPosts(maxFetch) {
   try {
-    const rows = await fetchPaged(COLLECTIONS.POSTS, null, maxFetch || constants.POSTS_FETCH_LIMIT);
+    const limit = Number(maxFetch) || constants.POSTS_FETCH_LIMIT;
+    const result = await callPostFunction({ action: 'list', limit: limit });
+    const rows = Array.isArray(result.list) ? result.list : [];
     cache.posts = rows
       .map(normalizePost)
       .sort(function (a, b) { return (b.createTime || 0) - (a.createTime || 0); });
@@ -260,31 +233,9 @@ async function pullPosts(maxFetch) {
    联系方式与完整学号 —— 云函数里做的脱敏被绕过。现在 applications 权限设为
    「所有用户不可读写」，读取与写入全部收拢到 cloudfunctions/application。*/
 
-async function seedDemoData() {
-  const posts = (mockData && mockData.postList) || [];
-  if (!posts.length) return;
-
-  for (let i = 0; i < posts.length; i++) {
-    const item = posts[i];
-    await col(COLLECTIONS.POSTS).add({
-      data: {
-        category: item.category,
-        title: item.title,
-        content: item.content,
-        tags: item.tags || [],
-        authorName: item.authorName || '',
-        contact: item.contact || '',
-        status: item.status || 'active',
-        heat: item.heat || 0,
-        createTime: item.createTime || Date.now(),
-        // 演示数据标成「其他同学」，否则灌进去的帖子全都算成你发的
-        authorOpenid: constants.AUTHOR_OPENID_MAP[item.authorName] || ''
-      }
-    });
-  }
-
-  await pullPosts();
-}
+/* 删除说明（v1.5.0）：seedDemoData() 已删 —— 它是客户端直接 col(posts).add() 的写入通道，
+   与「posts 所有用户不可读写」直接冲突，而且会往线上固化 openid_mock_* 的脏帖子。
+   需要演示数据时请在控制台手动插入，或临时写一个 admin 云函数动作，不要在客户端开口子。*/
 
 async function doInit() {
   // 旧版本把资料存在本地 local_profile（含写死的演示简历/微信号），启动时清掉，避免脏数据回流
@@ -315,15 +266,7 @@ async function doInit() {
     console.warn('[store] 申请列表拉取失败，已降级（大厅不受影响）');
   }
 
-  if (SEED_DEMO_POSTS && cache.posts.length === 0) {
-    try {
-      await seedDemoData();
-    } catch (err) {
-      // 灌数据失败不影响正常使用（多为权限/额度问题），不阻断初始化
-      console.warn('[store] 演示数据写入失败：', err);
-    }
-  }
-
+  // 【v1.5.0】演示数据灌溉已删除：posts 对客户端零读写，客户端再也不能 add。
   return getState();
 }
 
@@ -417,18 +360,20 @@ function findPost(postId) {
 
 /**
  * 按 _id 直取单条帖子（异步，会顺手补进缓存）。
- * 为什么需要它：列表缓存是「分页 + orderBy(createTime)」拉进来的，可能漏掉个别帖子
- * （超过 MAX_FETCH、缺 createTime 字段、翻页边界）；而任务页的评价按钮要求
+ * 为什么需要它：列表缓存是「limit + orderBy(createTime)」拉进来的，可能漏掉个别帖子
+ * （最新 N 条之外、缺 createTime 字段、分页边界）；而任务页的评价按钮要求
  * app.postId 必须能对应到帖子，一旦漏掉就出现「帖子明明存在，按钮却永远不出现」。
- * doc(id).get() 不受分页与排序影响，能直接定死「帖子到底存不存在」。
- * @return {object|null} 规范化后的帖子；不存在/无权限返回 null（不抛错，调用方可降级）
+ * v1.5.0 起改走云函数 post 的 action:'get'（posts 对客户端零权限，doc(id).get 已经调不通），
+ * 它同样不受分页与排序影响，能直接定死「帖子到底存不存在」。
+ * @return {object|null} 规范化后的帖子；不存在/调用失败返回 null（不抛错，调用方可降级）
  */
 async function fetchPostById(postId) {
   if (!postId) return null;
   const id = String(postId);
   try {
-    const res = await col(COLLECTIONS.POSTS).doc(id).get();
-    const doc = (res && res.data) || null;
+    // 云函数 post action:'get'（posts 对客户端零权限，客户端已无法 doc(id).get()）
+    const result = await callPostFunction({ action: 'get', postId: id });
+    const doc = result.post || null;
     if (!doc) return null;
     const post = normalizePost(doc);
     const exists = cache.posts.some(function (item) {
@@ -515,8 +460,8 @@ async function savePost(post) {
    v1.3.0（P0-4）：以前 endPost 是客户端 doc(id).update({ status: 'ended' })，
    靠的只是「posts 仅创建者可读写」—— 安全规则只判断「是不是你这条」，不限制「能改哪些字段」，
    于是作者可以自己把 auditing 改回 active（撤销举报审查）、改 heat、改 title/content。
-   现在改为：posts 对客户端只读（write=false），状态变更只能走 cloudfunctions/post，
-   服务端校验 authorOpenid === 当前 openid，并且只写 status / endTime 这两个字段。*/
+   v1.5.0：posts 收成「所有用户不可读写」，读取也只能走云函数（action list / get），
+   状态变更走 cloudfunctions/post（服务端校验 authorOpenid === 当前 openid，只写 status / endTime）。*/
 
 // 统一调用 post 云函数（结束 / 删除 / 取联系方式）
 async function callPostFunction(data) {
@@ -1184,9 +1129,13 @@ function getReceivedReviews() {
 }
 
 /* ---------------- 发布者名片（详情页用，云函数 getAuthorProfile 一次查全） ----------------
-   为什么不做缓存：名片属于「别人的数据」，且每次进详情看的都是不同的人，
-   缓存只会在别人刚改完简历 / 刚收到新评价时给出过期结果，不划算。
-   一次 callFunction 同时拿 users 简历 + reviews 匿名统计，前端不做任何多表串联。 */
+   一次 callFunction 同时拿 users 简历 + reviews 匿名统计，前端不做任何多表串联。
+   性能：详情页首屏先读本地 Storage 快照（readAuthorCardCache，key = cache_author_{openid}）
+   秒开，再后台静默拉云端覆盖 —— 与大厅「缓存先行 + 静默更新」同一套思路：
+   缓存只是快照，云端才是真相，所以不会长期停在别人改简历之前的旧版本。*/
+
+// Storage key 前缀：一人一份名片快照
+const AUTHOR_CACHE_PREFIX = 'cache_author_';
 
 // 兜底名片：云函数未部署 / 网络失败 / 对方没资料时，页面拿到的永远是这个完整结构（绝无 undefined）
 function emptyAuthorCard() {
@@ -1199,14 +1148,17 @@ function emptyAuthorCard() {
     reviewGoodCount: 0,
     reviewRate: 0,
     showRate: false,
-    reviewPendingText: constants.REVIEW_PENDING_TEXT,
+    // 与个人页同一套文案（好评率 + 评价次数）
+    reviewRateText: constants.formatReviewRateText(0, 0),
     anonymousName: constants.REVIEW_ANONYMOUS_NAME,
-    reviews: []
+    reviews: [],
+    // 本次是否真的拿到云端可信结果：false = 降级兜底，详情页不拿它覆盖本地缓存
+    ready: false
   };
 }
 
 // 云端结果 -> 页面字段：所有字段都做类型兜底，云端少给任何一个也不会让 wxml 取到 undefined
-function normalizeAuthorCard(result) {
+function normalizeAuthorCard(result, ready) {
   const card = emptyAuthorCard();
   const author = (result && result.author) || {};
   const review = (result && result.review) || {};
@@ -1215,6 +1167,7 @@ function normalizeAuthorCard(result) {
   const resume = String(author.resume || '');
   const total = Number(review.total) || 0;
 
+  card.ready = !!ready;
   card.nickname = nickname;
   card.avatarText = String(author.avatarText || (nickname ? nickname.slice(0, 1) : ''));
   card.resume = resume;
@@ -1224,7 +1177,7 @@ function normalizeAuthorCard(result) {
   card.reviewRate = Number(review.rate) || 0;
   // 不足 REVIEW_MIN_COUNT 条时一律不展示好评率（与个人页同一套规则）
   card.showRate = total >= constants.REVIEW_MIN_COUNT;
-  card.reviewPendingText = review.pendingText || constants.REVIEW_PENDING_TEXT;
+  card.reviewRateText = constants.formatReviewRateText(total, card.reviewRate);
   card.anonymousName = review.anonymousName || constants.REVIEW_ANONYMOUS_NAME;
   card.reviews = (Array.isArray(review.list) ? review.list : [])
     .filter(function (item) { return !!item; })
@@ -1276,8 +1229,44 @@ async function fetchAuthorProfile(input) {
   if (!result.ok) {
     console.warn('[store] 发布者名片返回失败 code=' + (result.code || '') + '：' + (result.message || ''));
   }
-  // 失败时云端也会回空结构，走同一套归一化（等价于空名片），前端无需分叉
-  return normalizeAuthorCard(result);
+  // 失败时云端也会回空结构，走同一套归一化（等价于空名片），前端无需分叉；
+  // ready 标记本次结果是否可信（false 时调用方不要拿它覆盖本地缓存）
+  return normalizeAuthorCard(result, !!result.ok);
+}
+
+/**
+ * 读取发布者名片本地快照（详情页首屏秒开用）
+ * 与兜底名片合并：老版本缓存少字段也不会让 wxml 取到 undefined
+ * @param {string} authorOpenid
+ * @return {object|null} 没有缓存 / 读失败返回 null
+ */
+function readAuthorCardCache(authorOpenid) {
+  const openid = String(authorOpenid || '');
+  if (!openid) return null;
+  try {
+    const cached = wx.getStorageSync(AUTHOR_CACHE_PREFIX + openid);
+    if (!cached || typeof cached !== 'object') return null;
+    const card = Object.assign(emptyAuthorCard(), cached);
+    card.reviews = Array.isArray(cached.reviews) ? cached.reviews : [];
+    return card;
+  } catch (err) {
+    console.warn('[store] 读取发布者名片缓存失败：', err);
+    return null;
+  }
+}
+
+/**
+ * 写入发布者名片本地快照（只在云端返回可信结果后调用）
+ * 写不进去不影响主流程：缓存只是体验优化
+ */
+function writeAuthorCardCache(authorOpenid, card) {
+  const openid = String(authorOpenid || '');
+  if (!openid || !card) return;
+  try {
+    wx.setStorageSync(AUTHOR_CACHE_PREFIX + openid, card);
+  } catch (err) {
+    console.warn('[store] 写发布者名片缓存失败：', err);
+  }
 }
 
 /* ---------------- 消息中心（云函数 message） ----------------
@@ -1658,9 +1647,11 @@ module.exports = {
   syncReceivedReviews,
   getReceivedReviews,
 
-  // 发布者名片（详情页，云函数 getAuthorProfile）
+  // 发布者名片（详情页，云函数 getAuthorProfile + 本地快照秒开）
   fetchAuthorProfile,
   emptyAuthorCard,
+  readAuthorCardCache,
+  writeAuthorCardCache,
 
   // 管理后台（云函数 admin，仅 role === 'admin' 可用）
   isAdmin,

@@ -21,6 +21,12 @@
           <view class="student-id" wx:else>学号：未填写</view>
         </view>
       </view>
+
+      <!-- 账号信用状态：warningCount 来自云端 users（只读），0 次绿色「信用良好」，>= 1 次橙红警告 -->
+      <view class="credit-row">
+        <text class="credit-label">账号信用状态</text>
+        <text class="credit-value {{creditGood ? 'credit-good' : 'credit-warn'}}">{{creditText}}</text>
+      </view>
     </view>
 
     <!-- 资料未完善：先提示，避免发布/申请时找不到展示名或联系方式 -->
@@ -68,7 +74,7 @@
         <text class="tip tip-inline">已绑定，不可修改</text>
         <text class="link-mini" catchtap="onStudentIdOccupied">学号被他人占用？</text>
       </view>
-      <text class="tip" wx:else>用于本校学生身份认证，一个学号仅能绑定一个微信账号</text>
+      <text class="tip" wx:else>{{studentIdTip}}</text>
 
       <view class="section-title section-title-gap">简历 / 技能描述<text class="badge-public">详情页公开展示</text></view>
       <textarea class="resume-input"
@@ -95,12 +101,8 @@
     <view class="card">
       <view class="review-header">
         <view class="section-title">收到的评价</view>
-        <!-- 总数 < 3：满意度统计中...；>= 3：好评率 xx% -->
-        <view class="review-rate" wx:if="{{showReviewRate}}">好评率 {{reviewRate}}%</view>
-        <view class="review-rate review-rate-pending" wx:else>{{reviewPendingText}}</view>
-      </view>
-      <view class="review-summary" wx:if="{{showReviewRate}}">
-        共 {{reviewTotal}} 条评价 · 满意 {{reviewGoodCount}} 条
+        <!-- 好评率 + 评价次数同句展示：满 3 条「好评率 95%（共 20 条评价）」，不足时「满意度统计中...（2/3 条）」 -->
+        <view class="review-rate {{showReviewRate ? '' : 'review-rate-pending'}}">{{reviewRateText}}</view>
       </view>
       <view class="review-item" wx:for="{{reviews}}" wx:key="id">
         <view class="review-head">

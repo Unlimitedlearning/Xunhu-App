@@ -96,6 +96,41 @@ page {
   color: var(--color-sub, #8A8A8A);
 }
 
+/* ---------- 账号信用状态 ---------- */
+/* 一行「标签 + 状态」：与上方头像块用细分割线隔开，不抢昵称主视觉 */
+.credit-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 24rpx;
+  padding-top: 24rpx;
+  border-top: 1rpx solid #f2f2f2;
+}
+
+.credit-label {
+  font-size: 26rpx;
+  color: var(--color-sub, #8A8A8A);
+  flex-shrink: 0;
+}
+
+.credit-value {
+  margin-left: 20rpx;
+  font-size: 26rpx;
+  line-height: 1.4;
+  text-align: right;
+  word-break: break-all;
+}
+
+/* 0 次违规：绿色；>= 1 次：橙红警告（字数多时自动换行，不撑破卡片） */
+.credit-good {
+  color: #07c160;
+}
+
+.credit-warn {
+  color: #fa5151;
+  font-weight: bold;
+}
+
 /* ---------- 可编辑资料 ---------- */
 .section-title {
   font-size: 28rpx;
@@ -277,7 +312,7 @@ page {
   margin-bottom: 16rpx;
 }
 
-/* 好评率 / 统计中：右侧小徽章，不抢标题 */
+/* 好评率 + 评价次数：右侧小徽章，不抢标题；文案变长后允许换行并封顶宽度 */
 .review-rate {
   font-size: 24rpx;
   font-weight: bold;
@@ -285,20 +320,17 @@ page {
   background-color: #e8f8ec;
   padding: 6rpx 16rpx;
   border-radius: 8rpx;
-  flex-shrink: 0;
-  white-space: nowrap;
+  margin-left: 20rpx;
+  flex-shrink: 1;
+  max-width: 62%;
+  text-align: right;
+  line-height: 1.4;
 }
 
 .review-rate-pending {
   color: #8A8A8A;
   background-color: #f5f6f8;
   font-weight: normal;
-}
-
-.review-summary {
-  font-size: 22rpx;
-  color: #b0b0b0;
-  margin-bottom: 8rpx;
 }
 
 /* 单条评价里的「评价状态 + 合作上下文」行：flex 横排，宽度不够时只让上下文收缩 */

@@ -160,7 +160,7 @@ page {
 
 /* ================= 发布者名片（简历 / 满意度 / 最近评价） ================= */
 
-/* 标题行：左边标题，右边满意度徐章 */
+/* 标题行：左边标题，右边满意度徽章 */
 .author-card-head {
   display: flex;
   align-items: center;
@@ -176,7 +176,8 @@ page {
   white-space: nowrap;
 }
 
-/* 好评率：绿色小徐章；不足 3 条时为灰色「满意度统计中...」 */
+/* 好评率 + 评价次数：绿色小徽章；不足 3 条时为灰色「满意度统计中...（2/3 条）」
+   文案含评价次数后变长，因此允许换行 + 宽度封顶，不允许撑破卡片 */
 .author-rate {
   font-size: 24rpx;
   font-weight: bold;
@@ -185,8 +186,10 @@ page {
   padding: 6rpx 16rpx;
   border-radius: 8rpx;
   margin-left: 20rpx;
-  flex-shrink: 0;
-  white-space: nowrap;
+  flex-shrink: 1;
+  max-width: 62%;
+  text-align: right;
+  line-height: 1.4;
 }
 
 .author-rate-pending {

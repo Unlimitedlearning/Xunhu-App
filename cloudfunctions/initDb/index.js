@@ -4,8 +4,9 @@
 // 说明：客户端 SDK 没有 createCollection，只有服务端 SDK 有，所以必须放在云函数里跑一次。
 // 用法：右键本文件夹 → 上传并部署（云端安装依赖）→ 云开发控制台「云函数 - initDb - 测试」直接运行。
 //      安全规则不会自动建，建完集合还要去控制台给 post_contacts / applications / users /
-//      reports / reviews / admin_logs / messages / announcements 设「所有用户不可读写」，
-//      posts 设「所有用户可读」（写入仅云函数）。
+//      reports / reviews / admin_logs / messages / announcements **以及 posts**
+//      全部设「所有用户不可读写」——posts 的读取也已经改走云函数 post（action: list / get），
+//      客户端不需要任何数据库权限。
 
 const cloud = require('wx-server-sdk');
 

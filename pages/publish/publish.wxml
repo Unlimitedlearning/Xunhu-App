@@ -1,6 +1,11 @@
 <!--pages/publish/publish.wxml-->
 <view class="container">
 
+  <!-- 任务三：发布前免责警示（置顶、浅黄背景，发布后无法自助撤回/编辑/隐藏） -->
+  <view class="warn-card">
+    <text class="warn-text">⚠️ 注意：信息发布后无法主动撤回、编辑或隐藏。请确认无误后再点击发布。</text>
+  </view>
+
   <!-- 分类 -->
   <view class="form-group">
     <text class="label">发布分类<text class="required">*</text></text>

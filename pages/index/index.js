@@ -7,6 +7,7 @@
 const store = require("../../utils/store");
 const guard = require("../../utils/guard");
 const constants = require("../../utils/constants");
+const tabBadge = require("../../utils/tabBadge");
 
 const CATEGORY_MAP = constants.CATEGORY_MAP;
 const POST_STATUS_MAP = constants.POST_STATUS_MAP;
@@ -33,6 +34,17 @@ const HOT_TAG_LIMIT = 8;
 
 // 标签筛选后一条都没命中时的空状态前缀（后面拼上标签名）
 const TAG_EMPTY_PREFIX = '没有找到包含「#';
+
+// 新生引导：本地缓存 key（写过一次就再也不弹）
+const GUIDE_STORAGE_KEY = 'hasSeenGuide_v1';
+
+// 新生引导的四个卖点（重点区别于普通微信群：信任 + 保障）
+const GUIDE_POINTS = [
+  { emoji: '🎓', title: '校内互助', desc: '学号格式校验，共建校园专属圈子' },
+  { emoji: '🤝', title: '双向互评', desc: '合作结束互相评价，留下真实信用记录' },
+  { emoji: '🛡️', title: '隐私保护', desc: '双方同意后才展示联系方式，避免骚扰' },
+  { emoji: '🚀', title: '快速发起', desc: '点击右下角 + 号发布招募，寻找神仙队友' }
+];
 
 /**
  * 标签归一化：统一成「去空白的字符串数组」并去重
@@ -67,18 +79,58 @@ Page({
     postList: [],          // 当前 Tab + 标签筛选后真正渲染的列表
     emptyText: EMPTY_TEXT.latest,
     refreshing: false,
-    loaded: false          // 云数据首次拉取是否完成（避免空状态误闪）
+    loaded: false,         // 云数据首次拉取是否完成（避免空状态误闪）
+    // ---- 新生一次性引导 ----
+    showGuide: false,      // 首次进大厅弹自定义遮罩，点「我知道了」后本地缓存置 true
+    guidePoints: GUIDE_POINTS
   },
 
   // 未进 data 的页面级字段：全部帖子的格式化结果（Tab 切换的唯一数据源）
   postPool: [],
 
   onShow: function () {
-    // 1) 缓存先行（秒开）：同步读本地快照 -> setData，第一帧就有内容，不白屏
+    // 0) 底部「我的」红点全局强提醒：有未读通知 / 新公告时亮红点
+    //    （TabBar 页面上调用才生效；失败 / 未登录 / 云函数未部署都静默降级，不影响下面渲染）
+    tabBadge.refresh();
+    // 1) 新生引导：只有没看过的新设备才弹（缓存命中直接跳过）
+    this.checkGuide();
+    // 2) 缓存先行（秒开）：同步读本地快照 -> setData，第一帧就有内容，不白屏
     this.renderCachedList();
-    // 2) 再静默拉云端：拿到新数据后覆盖快照并重新渲染（失败也不影响上面已渲染的缓存）
+    // 3) 再静默拉云端：拿到新数据后覆盖快照并重新渲染（失败也不影响上面已渲染的缓存）
     this.refreshList();
   },
+
+  /**
+   * 新生一次性引导：没写过 GUIDE_STORAGE_KEY 才弹
+   * guideDismissed 是页面级内存标记：即使 Storage 写入失败，本次会话也不会反复弹
+   */
+  checkGuide: function () {
+    if (this.data.showGuide || this.guideDismissed) return;
+
+    let seen = false;
+    try {
+      seen = wx.getStorageSync(GUIDE_STORAGE_KEY) === true;
+    } catch (err) {
+      console.warn('[index] 引导缓存读取失败，本次按未看过处理：', err);
+    }
+    if (seen) return;
+
+    this.setData({ showGuide: true });
+  },
+
+  // 「我知道了，开启寻呼」：落缓存 + 关弹窗，以后绝不再弹
+  onCloseGuide: function () {
+    this.guideDismissed = true;
+    this.setData({ showGuide: false });
+    try {
+      wx.setStorageSync(GUIDE_STORAGE_KEY, true);
+    } catch (err) {
+      console.error('[index] 引导已读标记写入失败：', err);
+    }
+  },
+
+  // 空实现：给遮罩层的 catchtouchmove 用，阻断滑动穿透
+  noop: function () {},
 
   /**
    * 缓存先行：本地快照 -> postPool -> 立即渲染（幂等，只在会话内首次执行）

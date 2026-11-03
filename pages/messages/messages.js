@@ -13,6 +13,7 @@
 
 const store = require('../../utils/store');
 const constants = require('../../utils/constants');
+const tabBadge = require('../../utils/tabBadge');
 
 function pad(value) {
   return value < 10 ? '0' + value : '' + value;
@@ -70,6 +71,9 @@ Page({
 
       // 进入即视为「公告已看」：本地时间戳推到当下（个人通知的已读仍以云端 isRead 为准）
       store.markMessagesSeen();
+
+      // 公告红点就地清掉；个人通知还有未读时继续保留红点（返回「我的」页会重新查一次）
+      tabBadge.apply((result.messages || []).some(function (item) { return !item.isRead; }));
 
       this.setData({ loading: false, loaded: true });
     } catch (err) {
@@ -144,6 +148,12 @@ Page({
       const patch = {};
       patch['items[' + index + '].isRead'] = true;
       this.setData(patch);
+
+      // 已读后同步底部「我的」Tab 红点：还有未读就留着，全部读完就隐藏
+      tabBadge.apply(this.data.items.some(function (item) {
+        return item.kind === 'message' && !item.isRead;
+      }));
+
       wx.showToast({ title: '已标记为已读', icon: 'none', duration: 1200 });
     } catch (err) {
       console.error('[messages] 标记已读失败：', err);

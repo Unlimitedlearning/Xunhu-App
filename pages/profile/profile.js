@@ -9,6 +9,7 @@
 
 const store = require("../../utils/store");
 const constants = require("../../utils/constants");
+const tabBadge = require("../../utils/tabBadge");
 
 const STUDENT_ID_REGEX = constants.STUDENT_ID_REGEX;
 
@@ -72,10 +73,12 @@ Page({
   refreshMessageBadge: async function () {
     if (!store.isLoggedIn()) {
       this.setData({ hasUnreadMessage: false });
+      tabBadge.apply(false); // 底部「我的」Tab 同步收红点
       return;
     }
-    const badge = await store.fetchMessageBadge();
-    this.setData({ hasUnreadMessage: !!badge.hasUnread });
+    // tabBadge.refresh 内部已兜底（查询失败按无红点），同时把红点落到「我的」Tab 上
+    const hasUnread = await tabBadge.refresh();
+    this.setData({ hasUnreadMessage: hasUnread });
   },
 
   /**
@@ -191,6 +194,8 @@ Page({
       await store.login();
       wx.hideLoading();
       await this.refreshProfile();
+      // 登录后立刻同步一次红点（否则要等下一次 onShow 才会亮）
+      this.refreshMessageBadge();
       wx.showToast({
         title: store.isProfileReady() ? '登录成功' : '登录成功，请完善昵称、真实姓名与联系方式',
         icon: 'none'
@@ -213,6 +218,8 @@ Page({
       success: function (res) {
         if (!res.confirm) return;
         store.logout();
+        that.setData({ hasUnreadMessage: false });
+        tabBadge.apply(false); // 退出登录后底部「我的」红点一并收掉
         that.refreshProfile();
         wx.showToast({ title: '已退出登录', icon: 'none' });
       }
@@ -314,17 +321,8 @@ Page({
       wx.hideLoading();
       await this.refreshProfile();
 
-      // 保存成功：第一句确认写入，第二句告诉用户「权限已经解锁」
+      // 保存成功只给一句确认，不再追加「可以去大厅发布了」这类引导文案
       wx.showToast({ title: '保存成功', icon: 'none', duration: 900 });
-      setTimeout(function () {
-        wx.showToast({
-          title: store.isProfileReady()
-            ? '现在您可以前往大厅发布需求了'
-            : '昵称、真实姓名、学号与联系方式都填好即可解锁大厅功能',
-          icon: 'none',
-          duration: 2500
-        });
-      }, 900);
     } catch (err) {
       wx.hideLoading();
       console.error('[profile] 资料保存失败：', err);

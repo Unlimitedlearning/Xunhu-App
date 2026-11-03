@@ -9,6 +9,22 @@
   flex-direction: column;
 }
 
+/* 发布前免责警示：浅黄底 + 深黄边框 + 深棕文字，放在表单最上方 */
+.warn-card {
+  background-color: #fffbe6;
+  border: 2rpx solid #faad14;
+  border-radius: 12rpx;
+  padding: 20rpx;
+  margin-bottom: 30rpx;
+  box-sizing: border-box;
+}
+
+.warn-text {
+  font-size: 26rpx;
+  line-height: 1.6;
+  color: #d46b08;
+}
+
 .form-group {
   background-color: #ffffff;
   border-radius: var(--radius-card, 24rpx);

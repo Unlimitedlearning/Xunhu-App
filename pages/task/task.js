@@ -11,6 +11,7 @@
 const store = require("../../utils/store");
 const guard = require("../../utils/guard");
 const constants = require("../../utils/constants");
+const tabBadge = require("../../utils/tabBadge");
 
 // ==================== DEV_DEBUG 排障开关 ====================
 // true  = 任务页顶部显示一行调试信息（openid / 帖子数 / 申请数 / 拉取错误），
@@ -45,6 +46,9 @@ Page({
   },
 
   onShow: function () {
+    // 底部「我的」红点：本页在 TabBar 上，把缓存里的未读状态重新落一次（零网络请求）
+    tabBadge.reapply();
+
     const isLogin = store.isLoggedIn();
     const ready = isLogin && store.isProfileReady();
 

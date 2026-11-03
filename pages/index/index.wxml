@@ -101,3 +101,22 @@
 <view class="fab-btn" hover-class="fab-btn-hover" catchtap="goToPublish">
   <text class="fab-icon">+</text>
 </view>
+
+<!-- 任务四：新生一次性使用引导（首次进大厅弹一次，写完 hasSeenGuide_v1 后不再弹）
+     放在 fab 之后 + z-index 999：遮罩完整盖住悬浮按钮，避免引导期间误点发布 -->
+<view class="guide-mask" wx:if="{{showGuide}}" catchtouchmove="noop">
+  <view class="guide-card">
+    <view class="guide-title">欢迎来到寻呼校园 👋</view>
+    <view class="guide-intro">这里不是普通微信群 —— 学号校验、互评信用、隐私保护，一个都不少</view>
+
+    <view class="guide-item" wx:for="{{guidePoints}}" wx:for-item="point" wx:key="title">
+      <text class="guide-emoji">{{point.emoji}}</text>
+      <view class="guide-item-body">
+        <text class="guide-item-title">{{point.title}}</text>
+        <text class="guide-item-desc">：{{point.desc}}</text>
+      </view>
+    </view>
+
+    <button class="guide-btn" bindtap="onCloseGuide">我知道了，开启寻呼</button>
+  </view>
+</view>

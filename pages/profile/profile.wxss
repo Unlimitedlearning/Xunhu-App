@@ -304,6 +304,12 @@ page {
   padding: 0;
 }
 
+/* 保存中（防连点）：与详情页 .action-btn[disabled] 同一套灰，视觉上明确「点不动了」 */
+.save-btn[disabled] {
+  background-color: #f0f0f0 !important;
+  color: #bbbbbb !important;
+}
+
 /* ---------- 收到的评价 ---------- */
 .review-header {
   display: flex;

@@ -1,14 +1,17 @@
 // cloudfunctions/publish/index.js
 // 作用：发布帖子的唯一写入口 —— 写入数据库前先过「本地严格防御」（可再叠微信机审），
-//       通过后按风控策略决定 status：老用户 + 信用良好 -> 'active'（直接上线）；
-//       首帖 或 有违规记录 -> 'auditing'（进后台「内容审核」人工复核）。
+//       通过后按风控策略决定 status：信用良好 -> 'active'（直接上线）；
+//       有违规记录（users.warningCount > 0）-> 'auditing'（进后台「内容审核」人工复核）。
+//
+// 【v1.8.0 冷启动松绑】取消「新用户首帖强制 auditing」：内测期新号首帖立刻进审核 = 半天看不见帖子，
+//   流失极高。现在只按「有无前科」拦，新号首帖同样直接 active；事后防线是举报阈值降到 3 人（见 report）。
 //
 // 风控体系（个人主体拿不到机审权限 48001，所以本地词库才是主防线）：
 //   第一层 前端轻量拦截：pages/publish 用同一份词库 + 同一套净化匹配，体验上即时提示
 //   第二层 云端绝对防线（这里）：写入前重新拼全文（title + content + tags + contact）再校一遍，
 //          客户端改包、直接调云函数都绕不过；文案统一「发布失败：包含违规词汇【xxx】，请修改后重试。」
 //   第三层 微信机审 msgSecCheck（能调就调，失败降级放行，见 SEC_CHECK_FAIL_OPEN）
-//   第四层 首帖 / 有前科强制人工复核（v1.6.0）：warningCount > 0 或历史发帖数 < 1 -> auditing
+//   第四层 有前科强制人工复核（v1.6.0）：warningCount > 0 -> auditing（v1.8.0 起不再拦首帖）
 //   第五层 上线后被举报 -> report 云函数把 status 改回 'auditing'（大厅打码、不可点入）
 //
 // 净化匹配（两处同实现，改一处必须同步另一处）：小写 + 全角转半角 + 删零宽字符 + 删全部空白标点
@@ -449,37 +452,17 @@ exports.main = async (event) => {
     }
   }
 
-  // 3.1 【v1.6.0 首帖审核策略】发帖前查 users.warningCount 与历史发帖数：
-  //   · warningCount > 0（有过违规记录）  -> 强制进入人工复核（auditing）
-  //   · 历史发帖数 < 1（首帖，新账号）-> 强制进入人工复核（auditing）
-  //   · 其余（老用户 + 信用良好）-> 直接上线（active）
-  // 为什么这么设计：审核员要能真实看到违规内容（而不是只能看到被举报的），
-  //   同时又不能把所有正常用户都卡在人工队列里；新号首帖 + 有前科的号就是成本最低的抽查点。
-  // 【统计口径】只算 active / auditing / ended：「已违规下架（deleted）」不算历史发帖，
-  //   否则被下架过的人反而能跳过首帖复核。
+  // 3.1 【v1.8.0 审核策略】只看「有无前科」，不再拦首帖：
+  //   · users.warningCount > 0（有过违规记录）-> 强制人工复核（auditing）
+  //   · 其余（含完全新号的首帖）-> 直接上线（active）
+  // 为什么松绑：内测期新号首帖一进人工队列就要等半天才可见，冷启动流失极高；
+  //   事后防线仍在 —— 被 3 个不同的人举报（REPORT_WEIGHT_AUDIT_THRESHOLD）立即打码进审查。
+  // 注：原「首帖判定」需要的历史发帖数 count 查询已随之删除（省一次读）。
   const warningCount = Number(profile.warningCount) || 0;
-  let historyCount = 0;
-  try {
-    const _count = db.command;
-    const historyRes = await db.collection(POSTS)
-      .where({ authorOpenid: openid, status: _count.in(['active', 'auditing', 'ended']) })
-      .count();
-    historyCount = Number(historyRes && historyRes.total) || 0;
-  } catch (err) {
-    if (!isMissingCollection(err)) {
-      // 查不到历史帖子数时宁可进人工复核：不能被「查询失败」绕过首帖审核
-      console.warn('[publish] 历史发帖数查询失败，按首帖（需审核）处理：', err && err.message);
-      historyCount = 0;
-    }
-  }
-
-  const needAudit = warningCount > 0 || historyCount < 1;
-  const auditReason = warningCount > 0
-    ? '账号存在违规记录，需人工复核'
-    : '首帖审核';
+  const needAudit = warningCount > 0;
+  const auditReason = '账号存在违规记录，需人工复核';
   console.log('[publish] 审核判定 openid=' + openid +
     ' warningCount=' + warningCount +
-    ' historyCount=' + historyCount +
     ' needAudit=' + needAudit);
 
   // 4. 本地违禁词（绝对防线）：标题 + 描述 + 标签 + 联系方式 合并成全文，做「净化匹配」
@@ -518,7 +501,7 @@ exports.main = async (event) => {
     };
   }
 
-  // 6. 全部校验通过 -> 上线或进人工复核（v1.6.0：首帖 / 有前科的号不再自动上线）
+  // 6. 全部校验通过 -> 上线（仅「有前科」的号进人工复核，v1.8.0 起首帖不拦）
   const now = Date.now();
   const doc = {
     // 显式写 _openid：历史规则与控制台排查都靠它认主（服务端写入，客户端伪造不了）
@@ -533,7 +516,7 @@ exports.main = async (event) => {
     authorCampus: String(profile.campus || ''),
     // 【P0-2】contact 不写这里：posts 对所有用户可读，写在这就是全站隐私泄露。
     // 联系方式落 post_contacts（_id = postId，客户端零权限），见下方 saveContact()
-    status: needAudit ? 'auditing' : 'active', // 首帖 / 有前科 -> 人工复核；其余机审 + 词库通过即上线
+    status: needAudit ? 'auditing' : 'active', // 有前科 -> 人工复核；其余（含新号首帖）词库/机审通过即上线
     heat: 0,
     reportWeight: 0, // 举报权重（v1.2.0 风控）：新帖子从 0 开始，每条新举报 +1
     createTime: now,
@@ -547,7 +530,7 @@ exports.main = async (event) => {
     },
     // 留痕：为什么进人工复核（后台「内容审核」Tab 直接展示这一句）
     auditReason: needAudit ? auditReason : '',
-    auditSource: needAudit ? (warningCount > 0 ? 'warning-count' : 'first-post') : '',
+    auditSource: needAudit ? 'warning-count' : '',
     auditTime: needAudit ? now : 0
   };
 

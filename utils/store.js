@@ -330,7 +330,10 @@ async function callPublishFunction(data) {
 
 /* ---------------- 帖子 posts ---------------- */
 
-// 单份本地草稿（上传失败时保留，离线可见，也仍会出现在大厅里带「草稿」标识）
+// 单份本地草稿（key = 'publish_draft'，见 constants.STORAGE_KEYS.DRAFT）
+// 【v1.8.0】写入 / 清除现在由 pages/publish 直接调 wx.setStorageSync / wx.removeStorageSync 完成，
+//   本文件的 saveDraft / removeDraft 保留为工具函数；两边写的草稿形状必须一致（id + status + 全量表单字段），
+//   否则大厅「草稿」卡片与发布页回填会认不出来。
 function getDraft() {
   const draft = wx.getStorageSync(STORAGE_KEYS.DRAFT);
   if (!draft || typeof draft !== 'object' || !draft.id) return null;
@@ -1467,8 +1470,8 @@ async function callAdminFunction(data) {
 }
 
 /* 内容审核队列（v1.7.1）：两类待办合并 + 分页。
-   ① posts.status === 'auditing'（首帖 / 有违规记录 / 举报满 5 人）；
-   ② 还有 pending 举报、但帖子仍是 active / ended 的（不足 5 人举报，v1.7.1 新收进队列）。
+   ① posts.status === 'auditing'（有违规记录 / 举报达阈值，v1.8.0 起为 3 人）；
+   ② 还有 pending 举报、但帖子仍是 active / ended 的（举报人数未达阈值，v1.7.1 新收进队列）。
    云端默认每次只回最新 20 条（pageSize 最大 50），返回 hasMore / pendingTotal 供页面提示。*/
 async function fetchAdminAuditQueue(options) {
   const input = options || {};

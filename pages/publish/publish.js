@@ -4,10 +4,11 @@
 //   第一层（本页）前端轻量拦截：title/content/tags/contact 拼全文 -> constants.checkTextViolation
 //             命中直接 toast 具体违规词，不发请求（纯体验，能被改包绕过）
 //   第二层（云端）绝对防线：cloudfunctions/publish 写入前用同一套词库 + 净化正则再校一遍（真的拦截）
-// 状态流转：
+// 状态流转（v1.8.0：首帖审核已取消，只有「有前科」的号会进 auditing）：
 //   通过  -> 云端直接写 status: 'active'（进行中，大厅可见可点入）
+//   有前科 -> status: 'auditing'，提示「已提交审核，通过后自动上线」
 //   拦截  -> 不写库，表单保留，提示「发布失败：包含违规词汇【xxx】，请修改后重试。」
-//   网络/云端异常 -> 存本地草稿（status: 'draft'），下次进发布页可恢复
+//   网络/云端异常 -> 存本地草稿（key = publish_draft），下次进发布页自动恢复
 
 const store = require("../../utils/store");
 const constants = require("../../utils/constants");
@@ -18,6 +19,27 @@ const CONTENT_RISKY_MESSAGE = constants.CONTENT_RISKY_MESSAGE;
 const ACTIVE_POST_LIMIT_MESSAGE = constants.ACTIVE_POST_LIMIT_MESSAGE;
 // 违禁词校验统一走 constants.checkTextViolation（净化匹配：小写 + 去空白 + 去全部标点 + 拼音兜底）
 const checkTextViolation = constants.checkTextViolation;
+
+/* ---------------- 本地草稿（v1.8.0 重新接上） ----------------
+ * key = 'publish_draft'（与 constants.STORAGE_KEYS.DRAFT 同一个值，改一处必须同步）。
+ * 只存一份：草稿是「本次没发出去的内容」，多份草稿反而让用户不知道哪份是新的。
+ * 只在「网络 / 云函数异常」时落盘 —— 违规内容绝不能写进本地反复提交。
+ */
+const DRAFT_KEY = constants.STORAGE_KEYS.DRAFT; // = 'publish_draft'
+// 草稿文档 ID：与 utils/store.js 的 DRAFT_ID 同值，大厅「草稿」卡片靠它认这份草稿
+const DRAFT_ID = 'local_draft';
+
+/**
+ * 拼草稿对象：补 id / status / createTime，形状与 store.getPosts() 里那张「草稿」卡片一致
+ * （少了 id，store.getDraft() 会当无效数据丢掉，大厅也就没有「草稿」标识）
+ */
+function buildDraft(postData) {
+  return Object.assign({}, postData, {
+    id: DRAFT_ID,
+    status: 'draft',
+    createTime: (postData && postData.createTime) || Date.now()
+  });
+}
 
 /* ---------------- 违禁词全文匹配工具 ---------------- */
 
@@ -75,8 +97,9 @@ Page({
     });
 
     wx.showToast({
-      title: '已为您恢复上次草稿',
-      icon: 'none'
+      title: '已恢复上次未发送的草稿',
+      icon: 'none',
+      duration: 2000
     });
   },
 
@@ -180,92 +203,106 @@ Page({
     };
 
     // 6. 上传（云函数 publish 内部再做一次严格校一遍 + 一人一帖查重，才是绝对防线）
-    this.uploadPost(newPost);
+    //    失败分流：能改的错误现场提示（不存草稿），只有网络/云函数异常才落盘 publish_draft
+    wx.showLoading({ title: '发布中...', mask: true });
+
+    let saved = null;
+    try {
+      saved = await store.savePost(newPost);
+    } catch (err) {
+      wx.hideLoading();
+      this.handleUploadError(err, newPost);
+      return;
+    }
+
+    wx.hideLoading();
+    // 【草稿清空】发布成功立即清掉本地草稿，否则下次进页会把已发出的内容当草稿恢复出来
+    wx.removeStorageSync(DRAFT_KEY);
+
+    // v1.8.0：只有「有前科」的账号会进人工复核，正常新号首帖直接上线
+    const pending = !!(saved && saved.status === 'auditing');
+    wx.showToast({
+      title: pending ? '已提交审核，通过后自动上线' : '发布成功，已上线',
+      icon: 'none',
+      duration: pending ? 2500 : 1500
+    });
+    this.resetForm();
+    this.backToHall(1200);
   },
 
   /**
-   * 上传：调云函数 publish
-   *   成功且 status = 'active' -> 直接上线
-   *   成功且 status = 'auditing'（v1.6.0：首帖 / 有违规记录）-> 进人工复核，文案必须说清楚
-   *   云端判定违规 -> 提示修改，**不清表单、不存草稿**（草稿是给网络故障用的，不能让违规内容落盘反复提交）
-   *   其他异常 -> 存草稿，下次进发布页能恢复
+   * 发布失败分流（v1.8.0：发布主流程改成 submitPost 里的 await + try/catch，失败分流抽到这里）
+   * 原则：能改的错误现场提示、**不存草稿**（违规内容落盘只会被反复提交）；
+   *       只有网络 / 云函数异常才写 publish_draft，用户下次进页自动回填。
    */
-  uploadPost: function (postData) {
+  handleUploadError: function (err, postData) {
     const that = this;
-    wx.showLoading({ title: '审核中...', mask: true });
+    console.error('[publish] 发布失败 code=' + (err && err.code) + '：', err);
 
-    store.savePost(postData).then(function (saved) {
-      wx.hideLoading();
-      store.removeDraft(); // 发布成功后清掉旧草稿
-      // v1.6.0：首帖 / 有违规记录的账号会被强制人工复核，不能让用户以为已经上线了
-      const pending = !!(saved && saved.status === 'auditing');
-      wx.showToast({
-        title: pending ? '已提交审核，通过后自动上线' : '发布成功，已上线',
-        icon: 'none',
-        duration: pending ? 2500 : 1500
+    // 1. 一人一帖：云端查重命中（前端拦截可能被绕，这里才是真的拦住）
+    if (err && err.code === 'ALREADY_HAS_ACTIVE') {
+      wx.showModal({
+        title: '暂时不能发布',
+        content: err.message || ACTIVE_POST_LIMIT_MESSAGE,
+        showCancel: false,
+        confirmText: '我知道了'
       });
-      that.resetForm();
-      that.backToHall(1200);
-    }).catch(function (err) {
-      wx.hideLoading();
-      console.error('[publish] 发布失败 code=' + (err && err.code) + '：', err);
+      return;
+    }
 
-      // 1. 一人一帖：云端查重命中（前端拦截可能被绕，这里才是真的拦住）
-      if (err && err.code === 'ALREADY_HAS_ACTIVE') {
-        wx.showModal({
-          title: '暂时不能发布',
-          content: err.message || ACTIVE_POST_LIMIT_MESSAGE,
-          showCancel: false,
-          confirmText: '我知道了'
-        });
-        return;
+    // 2. 违禁词 / 机审不通过：原地修改，不离开页面（云端标出了具体违规词就一并提示）
+    if (err && err.code === 'CONTENT_RISKY') {
+      // 云端已按统一句式下发「发布失败：包含违规词汇【xxx】，请修改后重试。」；
+      // 旧版云端只回 hitWord 时，本地按同一句式补全
+      const cloudMessage = (err && err.message) || CONTENT_RISKY_MESSAGE;
+      const needCompose = !!(err && err.hitWord) && cloudMessage.indexOf('【') === -1;
+      wx.showModal({
+        title: '内容未通过审核',
+        content: needCompose ? constants.violationMessage('发布', err.hitWord) : cloudMessage,
+        showCancel: false,
+        confirmText: '去修改'
+      });
+      return;
+    }
+
+    // 3. 资料未完善（学号/昵称/联系方式云端没有）：引导去「我的」
+    if (err && err.code === 'PROFILE_NOT_READY') {
+      wx.showModal({
+        title: '资料未完善',
+        content: err.message || '请先在「我的」页面完善资料',
+        confirmText: '去完善',
+        success: function (res) {
+          if (res.confirm) wx.switchTab({ url: '/pages/profile/profile' });
+        }
+      });
+      return;
+    }
+
+    // 4. 账号被封禁（users.role === 'banned'，云端拦截）：不存草稿，重启也绕不过去
+    if (err && err.code === 'ACCOUNT_BANNED') {
+      wx.showModal({
+        title: '账号受限',
+        // 统一文案（含真实管理员邮箱）：云端旧副本只回短句，这里以前端常量为准
+        content: constants.BANNED_BLOCK_MESSAGE,
+        showCancel: false,
+        confirmText: '我知道了'
+      });
+      return;
+    }
+
+    // 5. 其他（网络 / 云函数未部署 / 集合不存在）：【本地草稿】落盘，不让用户白写
+    //    key = 'publish_draft'，写入 title / content / tags / contact（含 category / authorName，回填时才完整）
+    wx.setStorageSync(DRAFT_KEY, buildDraft(postData));
+    wx.showModal({
+      title: '发布未完成',
+      content: '网络不佳，已为您保存草稿',
+      showCancel: false,
+      confirmText: '我知道了',
+      success: function () {
+        // 用户确认后清空表单并返回大厅（草稿已存，大厅会显示带「草稿」标识的卡片）
+        that.resetForm();
+        that.backToHall(1200);
       }
-
-      // 2. 违禁词 / 机审不通过：原地修改，不离开页面（云端标出了具体违规词就一并提示）
-      if (err && err.code === 'CONTENT_RISKY') {
-        // 云端已按统一句式下发「发布失败：包含违规词汇【xxx】，请修改后重试。」；
-        // 旧版云端只回 hitWord 时，本地按同一句式补全
-        const cloudMessage = (err && err.message) || CONTENT_RISKY_MESSAGE;
-        const needCompose = !!(err && err.hitWord) && cloudMessage.indexOf('【') === -1;
-        wx.showModal({
-          title: '内容未通过审核',
-          content: needCompose ? constants.violationMessage('发布', err.hitWord) : cloudMessage,
-          showCancel: false,
-          confirmText: '去修改'
-        });
-        return;
-      }
-
-      // 3. 资料未完善（学号/昵称/联系方式云端没有）：引导去「我的」
-      if (err && err.code === 'PROFILE_NOT_READY') {
-        wx.showModal({
-          title: '资料未完善',
-          content: err.message || '请先在「我的」页面完善资料',
-          confirmText: '去完善',
-          success: function (res) {
-            if (res.confirm) wx.switchTab({ url: '/pages/profile/profile' });
-          }
-        });
-        return;
-      }
-
-      // 4. 账号被封禁（users.role === 'banned'，云端拦截）：不存草稿，重启也绕不过去
-      if (err && err.code === 'ACCOUNT_BANNED') {
-        wx.showModal({
-          title: '账号受限',
-          // 统一文案（含真实管理员邮箱）：云端旧副本只回短句，这里以前端常量为准
-          content: constants.BANNED_BLOCK_MESSAGE,
-          showCancel: false,
-          confirmText: '我知道了'
-        });
-        return;
-      }
-
-      // 5. 其他（网络 / 云函数未部署 / 集合不存在）：存草稿，不让用户白写
-      store.saveDraft(Object.assign({}, postData, { status: 'draft' }));
-      wx.showToast({ title: '发布失败，已存草稿', icon: 'none' });
-      that.resetForm();
-      that.backToHall(1200);
     });
   },
 

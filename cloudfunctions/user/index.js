@@ -17,6 +17,7 @@
 //   { action: 'save', profile: {...} }        -> { ok, data: doc }
 //     profile 白名单：nickname / campus / studentId / resume / contact
 //     campus（v1.6.0）：必填，只能是 CAMPUS_LIST 里的值，非法值直接拒
+//     nickname（v1.8.0）：全局唯一，被其他用户占用时回 NICKNAME_TAKEN（查重排除自己）
 //   { action: 'deleteAccount' }               -> { ok, removed: {...} }  注销账号 + 级联清理
 //
 // 【v1.6.0】资料字段：campus（校区）是唯一的地域属性；早前版本的身份背书字段已下线，
@@ -561,6 +562,29 @@ exports.main = async (event) => {
         ok: false,
         code: (err && (err.errCode || err.code)) || '',
         message: String((err && err.message) || '学号查重失败')
+      };
+    }
+
+    /* 【v1.8.0 昵称查重】昵称是帖子 / 申请 / 评价里唯一展示的身份标识，
+     * 允许重名会让「冒充发帖人」变得无法追责（内测已发现该风险），所以昵称必须全局唯一。
+     * 为什么必须排除自己：只改简历 / 校区时昵称不变，不能因为「自己占了自己的名字」而保存失败。
+     * 为什么放服务端：前端校验改包即可绕过，这里才是唯一有效的关卡。
+     * 注：nickname 已在 normalize() 里 trim，所以库里的值与查询值口径一致。
+     */
+    try {
+      const sameNicknameDocs = await querySafe(db, { nickname: data.nickname });
+      const occupiedByOthers = sameNicknameDocs.filter(function (doc) {
+        return ownerOf(doc) !== openid;
+      });
+      if (occupiedByOthers.length) {
+        console.warn('[user][save] 昵称已被占用，拒绝保存：', openid, 'nickname=', data.nickname);
+        return { ok: false, code: 'NICKNAME_TAKEN', message: '该昵称已被占用，请换一个吧' };
+      }
+    } catch (err) {
+      return {
+        ok: false,
+        code: (err && (err.errCode || err.code)) || '',
+        message: String((err && err.message) || '昵称查重失败')
       };
     }
 

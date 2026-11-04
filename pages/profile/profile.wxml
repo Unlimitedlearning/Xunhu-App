@@ -50,6 +50,8 @@
              maxlength="20"
              value="{{nickname}}"
              bindinput="onNicknameInput" />
+      <!-- 昵称唯一性引导（v1.8.0）：昵称重名会导致冒充，这里提前告知用户规则 -->
+      <text class="tip">建议使用独一无二的昵称，以便同学记住你。</text>
 
       <!-- 校区（v1.6.0）：只能从固定选项里选，用于展示与匹配，不涉及任何身份认证 -->
       <view class="section-title section-title-gap">校区<text class="required">*</text><text class="badge-private">用于展示与匹配</text></view>
@@ -95,7 +97,11 @@
 
       <text class="tip">联系方式仅在你同意申请后展示给申请人</text>
 
-      <button class="save-btn" bindtap="saveProfile">保存资料</button>
+      <!-- 【防连点】保存中：按钮置灰 + loading，请求结束（成功或失败）后由 saveProfile 恢复 -->
+      <button class="save-btn"
+              disabled="{{isSaving}}"
+              loading="{{isSaving}}"
+              bindtap="saveProfile">保存资料</button>
     </view>
 
     <!-- 收到的评价：来自云端 reviews 集合（我作为被评价人），评价人一律匿名「某同学」 -->

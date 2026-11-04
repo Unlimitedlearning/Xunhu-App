@@ -110,8 +110,10 @@ function violationMessage(action, word) {
  * 【重要】阈值只在云函数里生效（cloudfunctions/report、cloudfunctions/admin），
  * 前端这份常量只用于页面文案与展示，不要在前端做任何「自动封禁」判断。
  */
-// v1.3.0 提高阈值（防协同举报滥用）：3 人举报即可下架、2 次警告即封号太容易被凑人头
-const REPORT_WEIGHT_AUDIT_THRESHOLD = 5; // reportWeight >= 5 -> 自动改 status = 'auditing'
+// v1.3.0 提高阈值（防协同举报滥用），v1.8.0 内测冷启动回调到 3
+// 【v1.8.0 策略调整】3 -> 5 -> 3：内测期需要“违规内容尽快下去”，协同举报的风险由 DEDUPE_BY_REPORTER +
+//   作者申诉（后台确认无违规时 auditDismissed 不重复扣警告）兑现，不再靠抬高阈值。
+const REPORT_WEIGHT_AUDIT_THRESHOLD = 3; // reportWeight >= 3 -> 自动改 status = 'auditing'
 const WARNING_BAN_THRESHOLD = 3;         // warningCount >= 3 -> 自动改 role = 'banned'（仅标记，不切断前端）
 
 /* 列表拉取上限（内测降本）：大厅 / 任务页每次同步只拉最新 20 条（= 1 次 get 请求）。
@@ -395,7 +397,8 @@ const REPORT_CATEGORIES = ['虚假信息', '违规内容', '骚扰谩骂', '其�
 // 注：举报记录已改为云端 reports 集合（云函数 report 写入），不再落本地
 const STORAGE_KEYS = {
   HEAT_HISTORY: 'local_heat_history', // 热度防刷记录：openid + 帖子 id + 日期 + 动作
-  DRAFT: 'local_draft',               // 上传失败的单份草稿（离线可用，属本地概念）
+  // 【v1.8.0】草稿 key 改为 publish_draft（发布页直接 wx.setStorageSync 写入，大厅「草稿」卡片同 key 读取）
+  DRAFT: 'publish_draft',             // 发布失败的单份草稿（离线可用，属本地概念）
   IS_LOGIN: 'isLogin',                // 仅表示「本次设备已登录」，不等于身份数据
   // 消息中心「最近一次进入时间」：只存本地，用于判断「有没有比它更新的公告」
   LAST_READ_MESSAGE_TIME: 'lastReadMessageTime',
@@ -407,7 +410,8 @@ const STORAGE_KEYS = {
 // 旧版本本地 key：启动时顺手清掉，避免旧数据死灰复燃
 //   local_profile -> 资料已改存云端 users 集合
 //   local_reports -> 举报已改存云端 reports 集合
-const LEGACY_STORAGE_KEYS = ['local_profile', 'local_reports'];
+//   local_draft   -> v1.8.0 草稿 key 改为 publish_draft，旧 key 直接丢弃（旧草稿内容不再迁移）
+const LEGACY_STORAGE_KEYS = ['local_profile', 'local_reports', 'local_draft'];
 
 module.exports = {
   CLOUD_ENV,

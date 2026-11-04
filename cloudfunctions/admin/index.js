@@ -32,7 +32,7 @@
 //
 // 【v1.7.1 修复（内测反馈）】
 //   1) 队列不只收 status === 'auditing'：pending 举报关联的帖子（哪怕还是 active）也进队列，
-//      否则「前 4 个举报」永远看不到、永远没人处理（满 5 个才进审）；
+//      否则「未达阈值的举报」永远看不到、永远没人处理（阈值为 REPORT_WEIGHT_AUDIT_THRESHOLD）；
 //   2) getAuditQueue 分页：默认每次只拉最新 20 条（AUDIT_PAGE_SIZE），批量查 users 只取昵称/校区/警告次数；
 //   3) 记警告 / 封禁必须带 reason：写 admin_logs + 站内通知里明确告知原因（合规追溯）。
 //
@@ -64,7 +64,7 @@ const MESSAGE_TYPE_SYSTEM = 'system';
 const ADMIN_CONTACT_EMAIL = 'xunhu_app@qq.com';
 
 // 自动风控阈值（与 cloudfunctions/report、utils/constants.js 三处同值）
-const REPORT_WEIGHT_AUDIT_THRESHOLD = 5;
+const REPORT_WEIGHT_AUDIT_THRESHOLD = 3; // v1.8.0：5 -> 3（3 人举报即进审查）
 const WARNING_BAN_THRESHOLD = 3;
 
 // 审核队列分页：管理后台是在手机上操作，一次拉 100 条又慢又没人往下翻 —— 默认只拉最新 20 条。
@@ -293,43 +293,6 @@ async function loadPendingReportsByPostIds(db, postIds) {
   return map;
 }
 
-// 批量统计「发帖人历史发帖数」-> { openid: 帖子条数（含当前这条待审帖） }
-// 只用来判断「是不是 0（新用户首帖）」，所以只取 authorOpenid 一列，不拉正文。
-async function countPostsByAuthors(db, openids) {
-  const _ = db.command;
-  const map = {};
-  const unique = [];
-  const seen = {};
-
-  (openids || []).forEach(function (id) {
-    if (!id || seen[id]) return;
-    seen[id] = true;
-    unique.push(id);
-  });
-
-  for (let i = 0; i < unique.length; i += BATCH_SIZE) {
-    const chunk = unique.slice(i, i + BATCH_SIZE);
-    try {
-      const res = await db.collection(POSTS)
-        .where({ authorOpenid: _.in(chunk) })
-        .field({ authorOpenid: true })
-        .limit(BATCH_FETCH_LIMIT)
-        .get();
-      ((res && res.data) || []).forEach(function (doc) {
-        const key = String((doc && doc.authorOpenid) || '');
-        if (!key) return;
-        map[key] = (map[key] || 0) + 1;
-      });
-    } catch (err) {
-      if (!isMissingCollection(err)) {
-        console.warn('[admin] 批量统计发帖数失败，跳过本批：', err && err.message);
-      }
-    }
-  }
-
-  return map;
-}
-
 /* ---------------- 写日志 ---------------- */
 
 async function writeLog(db, adminOpenid, action, targetId, extra) {
@@ -518,13 +481,13 @@ async function bumpUserWarning(db, userOpenid, source) {
   return { found: true, warningCount: next, banned: banned };
 }
 
-/* ---------------- auditReason 标签（v1.7.0） ----------------
+/* ---------------- auditReason 标签（v1.7.0 / v1.8.0 去掉首帖） ----------------
  * 一个帖子可能同时命中多个进审原因，所以用数组拼、逗号连接，例如「被用户举报(2次),违规用户发布」：
  *   · reportCount > 0    -> 被用户举报(X次)（只数「未处理」的举报，已结案的不算）
  *   · warningCount > 0   -> 违规用户发布（发帖人 users.warningCount）
- *   · historyCount === 0 -> 新用户首帖（该用户除当前这条以外的历史发帖数为 0）
- * type 只给前端上色用（report / warning 红橙，newbie 蓝，other 灰）；文案完全由服务端定，前端不拼字符串。*/
-function buildAuditTags(reportCount, warningCount, historyCount) {
+ * type 只给前端上色用（report 红 / warning 橙 / other 灰）；文案完全由服务端定，前端不拼字符串。
+ * 【v1.8.0】删掉「新用户首帖」标签：首帖审核策略已取消，再显示它只会让管理员误以为“因为是新人才进审”。*/
+function buildAuditTags(reportCount, warningCount) {
   const tags = [];
 
   if (reportCount > 0) {
@@ -533,14 +496,11 @@ function buildAuditTags(reportCount, warningCount, historyCount) {
   if (warningCount > 0) {
     tags.push({ type: 'warning', text: '违规用户发布' });
   }
-  if (historyCount === 0) {
-    tags.push({ type: 'newbie', text: '新用户首帖' });
-  }
 
   return tags;
 }
 
-/* 【v1.7.1】被举报、但还没达到自动下架阈值（5 人）的帖子：
+/* 【v1.7.1】被举报、但还没达到自动下架阈值（REPORT_WEIGHT_AUDIT_THRESHOLD，v1.8.0 起为 3 人）的帖子：
  * 这类帖子 status 仍是 active / ended，云上没人拦它，完全靠管理员在这里「忽略举报」或「下架」。
  * 标签固定带一条「尚未达到下架阈值」，让管理员一眼看出「它不是审中帖，是被举报的线上帖」。*/
 function buildReportedTags(reportCount, warningCount) {
@@ -932,10 +892,9 @@ async function handlePublishAnnouncement(db, adminOpenid, payload) {
 }
 
 /* ---------------- 审核队列（v1.7.0：getAuditQueue） ----------------
- * 队列 = posts.status === 'auditing'，进审的三种来源：
- *   · publish 首帖强制审核（auditSource = first-post）
+ * 队列 = posts.status === 'auditing'，进审的两种来源（v1.8.0 起不再有「首帖审核」）：
  *   · publish 有违规记录强制审核（auditSource = warning-count）
- *   · report 举报后自动审查（auditSource = report）
+ *   · report 举报达阈值后自动审查（auditSource = report）
  * 后台只下发「审核需要的最少信息」：标题 / 正文 / 分类 / 标签 / 作者昵称 / 校区 /
  *   脱敏学号 / 警告次数 / 举报次数 / auditReason 标签 / 时间。联系方式一律不下发。
  */
@@ -987,12 +946,13 @@ async function loadUsersByOpenids(db, openids) {
 
 /* ---------------- action: getAuditQueue（唯一待办队列，v1.7.1 分页 + 包含被举报线上帖） ----------------
  * 队列 = 两类待办合并：
- *   A. posts.status === 'auditing'：进审的三种来源（首帖 / 有违规记录 / 举报满 5 人）；
- *   B. 【v1.7.1】还有 pending 举报、但帖子本身还是 active / ended 的（不足 5 人举报）。
- *      之前只收 auditing，导致前 4 个举报从来没被管理员看到（石沉大海）—— 合规追溯必须能看到。
+ *   A. posts.status === 'auditing'：进审的两种来源（有违规记录 / 举报达阈值）；v1.8.0 起不再有「首帖」
+ *   B. 【v1.7.1】还有 pending 举报、但帖子本身还是 active / ended 的（不足 REPORT_WEIGHT_AUDIT_THRESHOLD 人举报）。
+ *      之前只收 auditing，导致未达阈值的举报从来没被管理员看到（石沉大海）—— 合规追溯必须能看到。
  * 分页：两个来源合并后按 createTime 倒序，只回最新 pageSize 条（默认 20，最大 50）。
- * 【性能】queries = 1(auditing) + 2(举报) + ceil(帖数/10) + 3×ceil(n/10)（n = 本页条数），
- *   全部批量并发，绝不在 map 循环里对每条帖子单独查 reports / users。*/
+ * 【性能】queries = 1(auditing) + 2(举报) + ceil(帖数/10) + 2×ceil(n/10)（n = 本页条数），
+ *   全部批量并发，绝不在 map 循环里对每条帖子单独查 reports / users。
+ *   【v1.8.0】删掉「发帖人历史帖数」那一批查询（首帖标签已下线），每页少 ceil(n/10) 次读。*/
 async function handleGetAuditQueue(db, payload) {
   const input = payload || {};
   // 页码从 0 开始；pageSize 默认 20，显式传值则夹在 1~AUDIT_PAGE_MAX
@@ -1070,15 +1030,13 @@ async function handleGetAuditQueue(db, payload) {
     if (author) authorIds.push(author);
   });
 
-  // 三个批量查询并发（不是循环单条查）：举报记录 / 发帖人资料（字段白名单） / 发帖人历史帖数
+  // 两个批量查询并发（不是循环单条查）：举报记录 / 发帖人资料（字段白名单）
   const batch = await Promise.all([
     loadPendingReportsByPostIds(db, postIds),
-    loadUsersByOpenids(db, authorIds),
-    countPostsByAuthors(db, authorIds)
+    loadUsersByOpenids(db, authorIds)
   ]);
   const reportMap = batch[0] || {};
   const userMap = batch[1] || {};
-  const postCountMap = batch[2] || {};
 
   let auditingCount = 0;
   let reportedCount = 0;
@@ -1099,12 +1057,9 @@ async function handleGetAuditQueue(db, payload) {
     const reports = reportMap[postId] || [];
     const reportCount = reports.length;
     const warningCount = warningOf(user);
-    // 历史发帖数 = 该用户总帖数 - 当前这条（它自己也在 posts 里）
-    const totalPosts = Number(postCountMap[authorOpenid]) || 0;
-    const historyCount = totalPosts > 0 ? totalPosts - 1 : 0;
 
     const auditTags = isAuditing
-      ? buildAuditTags(reportCount, warningCount, historyCount)
+      ? buildAuditTags(reportCount, warningCount)
       : buildReportedTags(reportCount, warningCount);
     if (!auditTags.length) {
       // 兜底：条件都没命中（历史脏数据）也要有标签，不能让卡片顶部空着
@@ -1129,7 +1084,7 @@ async function handleGetAuditQueue(db, payload) {
       reportCount: reportCount,
       // 最新一条举报理由：管理员扫一眼就知道争议点
       latestReportReason: reportCount ? String(reports[0].reason || '') : '',
-      // auditReason：多条件用逗号拼接，例如「被用户举报(2次),新用户首帖」/「被举报(2次),尚未达到下架阈值」
+      // auditReason：多条件用逗号拼接，例如「被用户举报(2次),违规用户发布」/「被举报(2次),尚未达到下架阈值」
       auditReason: auditTags.map(function (tag) { return tag.text; }).join(','),
       auditTags: auditTags,
       // 帖子当前状态（auditing / active / ended）：前端靠它决定【通过】还是【忽略举报】

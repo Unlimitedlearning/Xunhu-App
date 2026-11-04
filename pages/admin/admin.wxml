@@ -17,7 +17,7 @@
   <scroll-view class="scrollarea" scroll-y wx:if="{{activeTab === 'audit'}}">
     <view class="container">
 
-      <view class="hint">首帖、有违规记录、被用户举报的帖子都会进这里。其中「被举报但不足 5 人」的帖子仍在正常展示，卡片上会标「尚未达到下架阈值」，主按钮为【忽略举报】（只清理举报记录，帖子不下架、不通知作者）；审核中的帖子主按钮为【通过】。点标题可预览全文，下架必须选一个原因，系统会通知作者。</view>
+      <view class="hint">有违规记录、被用户举报的帖子都会进这里（v1.8.0 起不再有首帖审核）。其中「被举报但不足 3 人」的帖子仍在正常展示，卡片上会标「尚未达到下架阈值」，主按钮为【忽略举报】（只清理举报记录，帖子不下架、不通知作者）；审核中的帖子主按钮为【通过】。点标题可预览全文，下架必须选一个原因，系统会通知作者。</view>
 
       <view class="loading-text" wx:if="{{auditLoading && !auditLoaded}}">正在加载审核队列…</view>
 
@@ -34,7 +34,7 @@
 
       <view class="report-card" wx:for="{{auditPosts}}" wx:key="postId">
 
-        <!-- auditReason 标签：多条件同时命中会并排显示（被举报 / 违规用户发布 / 新用户首帖） -->
+        <!-- auditReason 标签：多条件同时命中会并排显示（被举报 / 违规用户发布；v1.8.0 已去掉「新用户首帖」） -->
         <view class="audit-reason-row">
           <text class="audit-reason-tag tag-{{tag.type}}"
                 wx:for="{{item.auditTags}}"

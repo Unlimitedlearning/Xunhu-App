@@ -3,8 +3,8 @@
 //
 // 【三个 Tab = 三类待办】
 //   【内容审核】两类帖子会出现在这里：
-//               ① status === 'auditing'：首帖 / 有违规记录 / 举报满 5 人被打码的帖子；
-//               ② 【v1.7.1】不足 5 人举报、但还有 pending 举报的帖子（status 仍是 active / ended）。
+//               ① status === 'auditing'：有违规记录 / 举报达阈值（v1.8.0 起 3 人）被打码的帖子；
+//               ② 【v1.7.1】举报人数未达阈值、但还有 pending 举报的帖子（status 仍是 active / ended）。
 //               两者的区别就在按钮文案：①【通过】【下架（选原因）】；②【忽略举报】【下架（选原因）】。
 //               卡片顶部直接给 auditReason 标签（按类型分色），云端拼好文案，前端不拼字符串。
 //   【学号申诉】按学号精确搜索 → 记警告 / 封禁 / 强制解绑（前两个必选原因）。
@@ -176,7 +176,7 @@ Page({
    * 拉取审核队列（v1.7.1）
    *   云端两类待办合并后分页，默认只回最新 20 条：
    *     ① status === 'auditing' 的帖子；
-   *     ② 还有 pending 举报但帖子仍是 active / ended 的（不足 5 人举报）。
+   *     ② 还有 pending 举报但帖子仍是 active / ended 的（举报人数未达阈值）。
    *   云端已批量联查 reports / users 并拼好 auditReason，前端不再自己算原因。
    */
   loadAuditQueue: async function () {

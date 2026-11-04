@@ -1,10 +1,10 @@
 // cloudfunctions/report/index.js
 // 作用：举报落库 + 举报权重累加 + 自动化风控（自动审查 / 自动封禁）。
 //
-// 数据流（v1.2.0 / v1.3.0 提高阈值）：
+// 数据流（v1.2.0 / v1.3.0 提高阈值 / v1.8.0 回调到 3）：
 //   1) reports 写入一条举报记录（status: 'pending'，供管理后台 getReports 拉取）
 //   2) posts.reportWeight +1 —— 仅「新的举报人」才加，同一人对同一帖子重复举报不加权
-//   3) reportWeight >= 5（REPORT_WEIGHT_AUDIT_THRESHOLD）
+//   3) reportWeight >= 3（REPORT_WEIGHT_AUDIT_THRESHOLD）
 //        -> posts.status = 'auditing'（大厅打码、不可点入）
 //        -> 发帖人 users.warningCount +1（同一条帖子只记一次，避免多举报人重复扣）
 //   4) 发帖人 warningCount >= 3（WARNING_BAN_THRESHOLD） -> users.role = 'banned'
@@ -12,11 +12,16 @@
 //   不再重复扣 warningCount —— 人工已经判定过无违规，不能靠“多找几个人举报”把作者封号。
 //
 // 【v1.3.0 防协同举报滥用（P0-6）】
-//   - 阈值从 3 人下架 / 2 次警告封号 提到 5 人 / 3 次：openid 的「人」成本太低（学号是自填），
+//   - 阈值曾经从 3 人下架 / 2 次警告封号 提到 5 人 / 3 次：openid 的「人」成本太低（学号是自填），
 //     6~9 个协同举报就能让一个正常同学帖子全下架 + 账号封禁，太容易被凑人头。
 //   - 封禁只「标记状态」：users.role = 'banned' + banSource / banTime 留痕，
 //     不清会话、不下线、不断前端：浏览大厅、任务页、评价列表照常可用，
 //     仅在发布 / 申请 / 评价这些写入入口由云端拦下并给可读提示（可线下发邮件申诉）。
+//
+// 【v1.8.0 审核阈值回调 5 -> 3】内测期内容量少、审核人手有限，违规内容贴在大厅一天比
+//   「偶尔误伤一个正常帖」代价高得多。协同举报的风险靠三道现有机制兑现：
+//   DEDUPE_BY_REPORTER（一人一帖只算 1 票）+ 管理员【通过】后 auditDismissed 不重复扣警告
+//   + 帖子上线不再需要等审核（首帖审核已取消，误伤的恢复成本也低了）。
 //
 // 为什么放服务端：
 //   1) 举报人可以改别人的帖子吗？客户端没权限（posts 仅创建者可写），必须服务端改；
@@ -46,7 +51,7 @@ const MAX_DESC = 200;
 const DEDUPE_BY_REPORTER = true;
 
 // 自动风控阈值（与 cloudfunctions/admin、utils/constants.js 三处同值）
-const REPORT_WEIGHT_AUDIT_THRESHOLD = 5; // 5 个不同举报人 -> 自动审查（原来是 3）
+const REPORT_WEIGHT_AUDIT_THRESHOLD = 3; // 3 个不同举报人 -> 自动审查（v1.8.0 从 5 回调）
 const WARNING_BAN_THRESHOLD = 3;         // 累计 3 次警告 -> 标记 banned（原来是 2）
 
 function errCodeOf(err) {

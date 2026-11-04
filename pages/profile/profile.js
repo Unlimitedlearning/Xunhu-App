@@ -67,6 +67,8 @@ Page({
     isProfileReady: false, // 昵称 + 校区 + 联系方式 + 广工学号均合格才为 true
     // 仅 role === 'admin' 为 true：决定是否显示【进入管理后台】入口（真正的权限校验在 admin 云函数）
     isAdmin: false,
+    // 【防连点】保存请求进行中：按钮 disabled + loading，请求结束（成功或失败）后自动恢复
+    isSaving: false,
     // 消息中心红点：有未读个人通知，或最新公告比本地 lastReadMessageTime 新
     hasUnreadMessage: false,
 
@@ -302,6 +304,8 @@ Page({
   // 保存资料到云端 users 集合（不再是本地 Storage）
   saveProfile: async function () {
     if (!this.data.isLogin) return;
+    // 【防连点】上一笔保存还没返回就直接忽略后续点击（按钮同时是 disabled，这里是第二道兜底）
+    if (this.data.isSaving) return;
 
     const nickname = (this.data.nickname || '').trim();
     if (!nickname) {
@@ -346,7 +350,9 @@ Page({
       return;
     }
 
-    wx.showLoading({ title: '保存中...' });
+    wx.showLoading({ title: '保存中...', mask: true });
+    // 进入保存态：按钮立即置灰 + 转圈，直到请求真正结束才恢复（见 finally）
+    this.setData({ isSaving: true });
     try {
       await store.saveProfile({
         nickname: nickname,
@@ -365,7 +371,15 @@ Page({
       console.error('[profile] 资料保存失败：', err);
 
       const code = err && err.code;
-      if (code === 'STUDENT_ID_TAKEN') {
+      if (code === 'NICKNAME_TAKEN') {
+        // 【v1.8.0】昵称被其他同学占用：昵称是帖子里唯一可见的身份标识，必须唯一。
+        // 只提示更换，绝不自作主张在昵称后加数字（那样会冒出一堆「小明111」，反而更难认）
+        wx.showToast({
+          title: (err && err.message) || '该昵称已被占用，请换一个吧',
+          icon: 'none',
+          duration: 2500
+        });
+      } else if (code === 'STUDENT_ID_TAKEN') {
         // 学号被他人占用：这是安全拦截，用弹窗而不是 toast
         wx.showModal({
           title: '学号已被绑定',
@@ -397,6 +411,9 @@ Page({
           icon: 'none'
         });
       }
+    } finally {
+      // 无论成功 / 失败都要恢复按钮：否则用户会卡在「保存中」再也点不动
+      this.setData({ isSaving: false });
     }
   },
 

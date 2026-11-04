@@ -72,8 +72,8 @@ app.js                     启动：wx.cloud.init(CLOUD_ENV) + store.init() 预�
 | `pages/index/index` | **大厅**：三个 Tab（最新发布 / 最热招募 / 往期历史）列表渲染与筛选，卡片点击进详情，右下角 `+` 进发布 | tabBar | `onShow`（缓存先行 → `refreshList`）、`applyTab` / `onTabChange`、`formatPost`、`goToDetail`、`goToPublish` |
 | `pages/detail/detail` | **详情页**：帖子全文 + 发布者名片 + 底部主按钮（发帖人=去任务页/结束，访客=报名）+ 举报；`?admin=1` 为管理员预览审查帖通道 | 大厅卡片 / 分享直达 | `onLoad`、`loadAuthorCard`、`onActionClick`（报名 / 结束分流）、`askApplyNote` + `confirmApply`、`onEndClick`、`onReportClick` |
 | `pages/task/task` | **任务页**：申请流转工作台（我发出的 / 我收到的）+ 同意拒绝 + 双向评价入口；未登录或资料不完善只显示引导 | tabBar | `refreshList`（唯一网络入口）、`renderList`、`onAcceptTap` / `onRejectTap`、`openReviewModal` / `submitReview`；`DEV_DEBUG` 排障开关 |
-| `pages/profile/profile` | **我的**：登录（只确认 openid）+ 资料维护（昵称/校区/学号/简历/联系方式）+ 收到的评价与好评率 + 管理员入口 + 注销账号 | tabBar | `refreshProfile`、`handleLogin` / `handleLogout`、`saveProfile`、`onCampusChange`、`handleDeleteAccount`、`renderReviews`、`onAdminTap` |
-| `pages/publish/publish` | **发布页**：分类/标题/描述/标签/联系方式表单 + 前端违禁词轻量拦截 + 提交云端发布；失败存本地草稿 | 大厅 `+` | `onSubmit`（拼全文 → `checkTextViolation` → `store.savePost`）、草稿恢复 |
+| `pages/profile/profile` | **我的**：登录（只确认 openid）+ 资料维护（昵称唯一/校区/学号/简历/联系方式）+ 收到的评价与好评率 + 管理员入口 + 注销账号 | tabBar | `refreshProfile`、`handleLogin` / `handleLogout`、`saveProfile`（v1.8.0：`isSaving` 防连点 + `NICKNAME_TAKEN` 提示）、`onCampusChange`、`handleDeleteAccount`、`renderReviews`、`onAdminTap` |
+| `pages/publish/publish` | **发布页**：分类/标题/描述/标签/联系方式表单 + 前端违禁词轻量拦截 + 提交云端发布；失败存本地草稿 `publish_draft`（v1.8.0 重新接上） | 大厅 `+` | `onLoad`（恢复草稿）、`onSubmit`（拼全文 → `checkTextViolation` → `store.savePost`）、`handleUploadError`（错误分流 + 写草稿） |
 | `pages/admin/admin` | **管理后台**：三个 Tab（内容审核 / 学号申诉 / 系统公告）；内容审核队列卡片顶部显示 `auditReason` 标签，底部只有【通过】与【下架（选原因）】；学号申诉可【记警告】【封禁】【强制解绑】；进页先校验 `role === 'admin'` | 我的 → 管理员入口 | `guardAndLoad`、`onTabChange`、`loadAuditQueue`、`onAuditApproveTap` / `onAuditRejectTap`（ActionSheet 选原因）、`runAuditAction`、`searchUser`、`onWarningTap` / `onBanTap`、`onUnbindTap`、`goPostDetail`（`?admin=1`）、`publishAnnouncement` |
 | `pages/agreement/agreement` | **协议页**：用户服务协议 / 隐私保护指引纯静态文本，无任何数据读写（v1.6.0：校区口径、审核口径去伪、注销说明） | 我的（底部协议入口，两个链接都指向本页） | —（`agreement.js` 仅读取常量） |
 | `pages/messages/messages` | **消息中心**：个人通知（可点开置已读）+ 置顶全体公告（已读靠本地时间戳） | 我的 → 消息 / 红点入口 | `loadList`、`onMessageTap`（`markMessageRead`）、`markMessagesSeen` |
@@ -124,18 +124,21 @@ app.js                     启动：wx.cloud.init(CLOUD_ENV) + store.init() 预�
 | `user` | `get` / `save`（默认 `get`）/ `deleteAccount` | 读写 `users`：昵称 / 校区 / 学号 / 简历 / 联系方式；`deleteAccount` = 写 `blacklist` + 删资料 + 帖子改 `deleted` + 级联清理申请/评价/通知 | 学号正则 `^31\d{8}$`、学号唯一性、`campus` 白名单、资料违禁词、`role` 不可写、黑名单拦截 |
 | `initDb` | `{}` / `{ diagnose: true }` | 创建 **10** 个集合；自检各集合是否存在 / 条数 | 仅服务端 SDK 可 `createCollection` |
 | `heat` | `{ postId }` | 帖子热度原子自增 `_.inc` | 单次 `MAX_DELTA = 5` 防刷；管理员预览不加热度 |
-| `publish` | 无（单一入口） | 发布唯一写入口：词库校验 + 可选机审 → **首帖 / 有违规记录强制 `auditing`，其余直接 `active`**；`status` / `authorOpenid` / `authorName` / `authorCampus` 均服务端决定 | 违禁词（绝对防线）、一人一帖 `ALREADY_HAS_ACTIVE`、`role==='banned'` / 黑名单拒发、机审 `CONTENT_RISKY` |
+| `publish` | 无（单一入口） | 发布唯一写入口：词库校验 + 可选机审 → **仅「有违规记录」强制 `auditing`，其余（含新号首帖）直接 `active`**（v1.8.0 取消首帖审核）；`status` / `authorOpenid` / `authorName` / `authorCampus` 均服务端决定 | 违禁词（绝对防线）、一人一帖 `ALREADY_HAS_ACTIVE`、`role==='banned'` / 黑名单拒发、机审 `CONTENT_RISKY` |
 | `application` | `apply` / `updateStatus` / `list` | 申请流转**唯一入口**：提交申请（附言必填）、同意/拒绝、联查 posts + users 下发列表；accepted 后给申请人发一条站内通知 | `receiverId === openid` 才能改状态；`pending/rejected` 永不下发联系方式与完整学号；黑名单 / `campus` 不合法拒接 |
-| `report` | 无（单一入口） | 举报落库 + `posts.reportWeight +1`（同一举报人不重复加权）+ 自动审查 / 自动封禁 | 禁举报自己；`reportWeight ≥ 5` → `auditing` 且 `warningCount +1`；`warningCount ≥ 3` → `role='banned'`（只标记 + `banSource/banTime` 留痕，**不切断前端**）；`auditDismissed` 者不重复扣警告 |
+| `report` | 无（单一入口） | 举报落库 + `posts.reportWeight +1`（同一举报人不重复加权）+ 自动审查 / 自动封禁 | 禁举报自己；`reportWeight ≥ 3` → `auditing` 且 `warningCount +1`（v1.8.0 阈值从 5 回调到 3）；`warningCount ≥ 3` → `role='banned'`（只标记 + `banSource/banTime` 留痕，**不切断前端**）；`auditDismissed` 者不重复扣警告 |
 | `review` | `submit` / `get` / `mine` / `received` | 双向评价唯一读写入口：提交（只 `add` 不 update）、查重、我发出的、我收到的匿名统计 | 禁自评、`rating` 只能 1/0、必须有 accepted 申请关系、帖子必须 `ended`、同帖同人唯一 `ALREADY_REVIEWED`、评价正文违禁词 |
 | `getAuthorProfile` | 无（`{ postId }` 或 `{ authorOpenid }`） | 详情页「发布者名片」：一次返回 `users` 简历 + `reviews` 匿名统计与最近 3 条 | 用 `postId` 反查真实 `authorOpenid`（不信客户端），字段白名单，不下发 openid / 联系方式 / 学号 |
 | `post` | `end` / `delete` / `contact` / `migrateContacts` | 帖子状态唯写入口（结束 / 删除）+ 联系方式按关系下发 + 历史 contact 迁移 | 服务端校 `authorOpenid === openid`，`end` 只写 `status/endTime`；**【v1.7.2】`status === 'auditing'` 的帖子 `end` / `delete` 一律拒接（`POST_AUDITING`），只有 `active` 允许作者改状态**（否则「发违规 → 进审核 → 自己删掉」可销毁举报证据）；`contact` 仅作者或 accepted 申请人可见 |
 | `message` | `list` / `read` / `badge` | 消息中心：个人通知（20 条）+ 置顶公告（3 条）+ 红点计数 | 只下发属于自己（`toOpenid` / `_openid`）的记录；`read` 先校归属 |
-| `admin` | `getAuditQueue` / `approve` / `reject` / `searchUser` / `addWarning` / `banUser` / `unbind` / `publishAnnouncement` | 管理后台（v1.7.0 统一审核流）：**待办队列（批量联查 reports + users，拼 auditReason 标签）**、通过上线 / 下架（警告 +1 · 满 3 封禁 · 举报全部置 resolved · 通知作者）、按学号查人、记警告、封禁（写 `blacklist`）、强制解绑、发布公告 | 每个 action 先校验 `users.role === 'admin'`，否则 `FORBIDDEN`；不能对管理员记警告 / 封禁；破坏性操作写 `admin_logs`；旧 action（`getReports` / `ignore` / `violate` / `getAuditingPosts` / `approvePost` / `deletePost`）返回 `ACTION_DEPRECATED` |
+| `admin` | `getAuditQueue` / `approve` / `reject` / `searchUser` / `addWarning` / `banUser` / `unbind` / `publishAnnouncement` | 管理后台（v1.7.0 统一审核流）：**待办队列（只批量联查 reports + users，拼 auditReason 标签：被用户举报 / 违规用户发布）**、通过上线 / 下架（警告 +1 · 满 3 封禁 · 举报全部置 resolved · 通知作者）、按学号查人、记警告、封禁（写 `blacklist`）、强制解绑、发布公告 | 每个 action 先校验 `users.role === 'admin'`，否则 `FORBIDDEN`；不能对管理员记警告 / 封禁；破坏性操作写 `admin_logs`；旧 action（`getReports` / `ignore` / `violate` / `getAuditingPosts` / `approvePost` / `deletePost`）返回 `ACTION_DEPRECATED`；**【v1.8.0】不再统计发帖人历史帖数（「新用户首帖」标签已删，每页少一批读）** |
 
 **阈值与文案的三方同步点**（改一处必须同步全部）：
 `utils/constants.js` ↔ `cloudfunctions/report/index.js` ↔ `cloudfunctions/admin/index.js`
-（`REPORT_WEIGHT_AUDIT_THRESHOLD`、`WARNING_BAN_THRESHOLD`、`REPORT_CATEGORIES`、`ACTIVE_POST_LIMIT_MESSAGE`、`ALREADY_REVIEWED_MESSAGE` 等）。
+（`REPORT_WEIGHT_AUDIT_THRESHOLD`（v1.8.0 起为 **3**，从 5 回调）、`WARNING_BAN_THRESHOLD`（= **3**）、`REPORT_CATEGORIES`、`ACTIVE_POST_LIMIT_MESSAGE`、`ALREADY_REVIEWED_MESSAGE` 等）。
+
+**审核策略（v1.8.0）**：发布只按「有无前科」判 —— `warningCount > 0` 进 `auditing`，其余（含新号首帖）直接 `active`；
+取消首帖审核后，内容风险由举报兜底：`reportWeight ≥ 3` 即打码进审。
 
 ---
 
@@ -253,19 +256,19 @@ app.js                     启动：wx.cloud.init(CLOUD_ENV) + store.init() 预�
 | 文件 | 行数 | 说明 |
 |---|---|---|
 | `utils/store.js` | 1804 | 最大文件，按第 3 节章节索引只读需要的段 |
-| `cloudfunctions/admin/index.js` | 1118 | 管理后台（含审核队列 / 警告 / 封禁） |
+| `cloudfunctions/admin/index.js` | 1326 | 管理后台（含审核队列 / 警告 / 封禁） |
 | `cloudfunctions/application/index.js` | 845 | 申请流转 |
-| `cloudfunctions/user/index.js` | 690 | 用户资料 + 账号注销 |
+| `cloudfunctions/user/index.js` | 714 | 用户资料（含昵称全局查重）+ 账号注销 |
 | `pages/admin/admin.js` | 672 | 后台页 |
-| `cloudfunctions/publish/index.js` | 604 | 发布 + 词库副本 |
+| `cloudfunctions/publish/index.js` | 587 | 发布 + 词库副本 |
 | `pages/detail/detail.js` | 539 | 详情页 |
 | `pages/task/task.js` | 536 | 任务页 |
 | `cloudfunctions/review/index.js` | 477 | 评价 |
 | `utils/constants.js` | 473 | 字典 / 文案 / 词库 |
 | `cloudfunctions/report/index.js` | 316 | 举报 + 风控 |
 | `cloudfunctions/post/index.js` | 325 | 帖子状态唯写入口：结束 / 删除 / 联系方式 |
-| `pages/profile/profile.js` | 517 | 我的（含校区选择 / 注销） |
-| `pages/publish/publish.js` | 284 | 发布页 |
+| `pages/profile/profile.js` | 534 | 我的（含校区选择 / 注销 / 保存防连点） |
+| `pages/publish/publish.js` | 332 | 发布页（含本地草稿） |
 | `cloudfunctions/message/index.js` | 243 | 消息中心（通知 + 公告） |
 | `cloudfunctions/getAuthorProfile/index.js` | 238 | 发布者名片 |
 | `pages/index/index.js` | 236 | 大厅 |

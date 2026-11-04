@@ -19,6 +19,10 @@
 //     -> { ok: true, id, status, statusUpdateTime,
 //          applicantName, applicantResume, applicantContact, applicantStudentId }
 //        （applicantContact / applicantStudentId 只在 accepted 时有值）
+//
+// 订阅消息（v1.9.0）：写库成功后下发，失败只 console.warn，不影响任何返回值——
+//   apply 成功 -> notifyNewApplication（申请进度通知，发给发帖人）
+//   updateStatus 变 accepted -> notifyApplicationAccepted（申请通过通知，发给申请人）
 //   { action: 'list' }
 //     -> { ok: true, sent: [...], received: [...] }  已联查 posts / users，字段见 handleList
 //        sent[].contact / sent[].authorStudentId：发帖人的联系方式 / 完整学号（仅 accepted）
@@ -60,6 +64,20 @@ const BLACKLIST_MESSAGE = '该账号已注销或已被限制使用，如有疑�
 const BANNED_MESSAGE = '您的账号因违规已被限制使用';
 
 const MAX_ROWS = 100; // 单次 list 的拉取上限（服务端 SDK 上限 1000，内测量级 100 足够）
+
+/* ---------------- 订阅消息模板（v1.9.0） ----------------
+ * 与 utils/constants.js 的 TMPL_APPLY_ID / TMPL_ACCEPT_ID 同值副本
+ * （云函数目录独立打包，拿不到小程序端常量，换模板要两边一起改）。
+ *   申请进度通知（TMPL_PROGRESS_ID）→ 有人申请时发给**发帖人**
+ *   申请通过通知（TMPL_ACCEPTED_ID）→ 同意后发给**申请人**（name1 固定短语，不传昵称）
+ */
+const TMPL_PROGRESS_ID = 'FMSZc4FaBle4Cd7rRutVbrcuE3iqG5tFKAtctsehH1E';
+const TMPL_ACCEPTED_ID = 'DE4ywFc6fTB0pgJwrxCPMWN2AF8SUhiE9fuaTacvm5Q';
+
+// 小程序版本（模板卡片的跳转目标）：不传 = 微信默认「正式版」。
+// 真机测开发版 / 体验版时临时改成 'developer' / 'trial'，否则点卡片会跳到正式版找页面。
+// 上线前提回空串。
+const TMPL_MINIPROGRAM_STATE = '';
 
 /* ---------------- 违禁词库 + 净化匹配（与 utils/constants.js 同值副本） ----------------
  * 为什么申请附言也要查：附言会直接出现在发帖人的屏幕上，是骚扰 / 广告（「加 V 代写」）的高发区。
@@ -376,6 +394,152 @@ async function resolveApplicant(db, app) {
   };
 }
 
+/* ---------------- 订阅消息下发（v1.9.0） ----------------
+ * 两个模板都是「一次性订阅」：用户点过「允许」= 攒下 1 条额度，发一条扣 1 条。
+ *
+ * 微信对字段值卡得很死，以下三条踩了整条消息直接发不出去（errCode 47003）：
+ *   1) data 必须是 { "thing9": { "value": "张三" } } 这种嵌套结构，直接给字符串必炸；
+ *   2) thing.DATA ≤ 20 个字符、name.DATA ≤ 10 个纯汉字、phrase.DATA ≤ 5 个汉字；
+ *   3) thing / name 不收表情符号，昵称里的 emoji 要提前剥掉。
+ *
+ * 这套逻辑是「附加能力」，绝不能影响申请主流程，所以：
+ *   - 所有发送都包 try/catch，失败只 console.warn，函数返回 false；
+ *   - 没额度（43101 user refuse to accept the msg）、模板被停用（43102）都属正常业务态，
+ *     用户当初点了「拒绝」或者压根没授权过，日志里能看出来就行，不要弹错。
+ */
+
+// 表情符号 / 零宽字符：thing / name 字段不收，先剥掉再截断（先剔字符，后数字数）
+const TMPL_EMOJI_REGEX = /[\uD800-\uDBFF][\uDC00-\uDFFF]|[\u2600-\u27BF\u2B00-\u2BFF\uFE0F\u200D]/g;
+const TMPL_INVISIBLE_REGEX = /[\u200B-\u200D\uFEFF]/g;
+
+const TMPL_THING_MAX = 20; // thing.DATA 上限
+const TMPL_PENDING_TEXT = '待处理'; // phrase2 固定值
+// name1 固定短语：不传申请人自己的昵称（接收者看自己的名字很奇怪），
+// name.DATA ≤ 10 个汉字，「您的申请已通过」= 7 个字，安全
+const TMPL_ACCEPTED_TITLE = '您的申请已通过';
+
+// 兜底文案：字段为空时不能传 ''（空字符串同样 47003）
+const TMPL_THING_FALLBACK = '校园信息';
+const TMPL_APPLICANT_FALLBACK = '同学'; // 申请人昵称缺失时 thing9 的兜底
+
+/**
+ * 字段值清洗 + 截断
+ * @param {*} text     原始文本
+ * @param {number} max 最大字符数（thing 类字段一律 20）
+ * @param {string} fallback 文本为空时的兜底（不能是空串）
+ */
+function cutField(text, max, fallback) {
+  const raw = String(text === null || text === undefined ? '' : text)
+    .replace(TMPL_INVISIBLE_REGEX, '')
+    .replace(TMPL_EMOJI_REGEX, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const safe = raw || fallback || TMPL_THING_FALLBACK;
+  // 表情已剔除，此时 length ≈ 字符数；超出上限一律 substring 截断
+  return safe.length > max ? safe.substring(0, max) : safe;
+}
+
+function pad2(num) {
+  return num < 10 ? '0' + num : String(num);
+}
+
+/**
+ * 时间格式化：YYYY-MM-DD HH:mm:ss
+ * 云函数运行环境是 UTC，模板展示要北京时间，所以手工 +8 小时并用 getUTC* 取值；
+ * 不能用 toLocaleString（受运行环境时区影响，日志与真机对不上）。
+ */
+function formatTime(timestamp) {
+  const ms = Number(timestamp) || Date.now();
+  const date = new Date(ms + 8 * 60 * 60 * 1000);
+  return date.getUTCFullYear() + '-' +
+    pad2(date.getUTCMonth() + 1) + '-' +
+    pad2(date.getUTCDate()) + ' ' +
+    pad2(date.getUTCHours()) + ':' +
+    pad2(date.getUTCMinutes()) + ':' +
+    pad2(date.getUTCSeconds());
+}
+
+// 跳转路径：必须是绝对路径且**不带前导斜杠**（'pages/xxx/xxx?id=1'），顺手清掉误加的 '/'
+function normalizePage(page) {
+  return String(page || '').replace(/^\/+/, '');
+}
+
+/** 统一发送入口：永不抛错，失败只 warn */
+async function sendSubscribeMessage(options) {
+  const opts = options || {};
+  const touser = String(opts.touser || '');
+  const templateId = String(opts.templateId || '');
+  const scene = String(opts.scene || 'subscribe');
+
+  if (!touser || !templateId) {
+    console.log('[application][' + scene + '] 缺少 touser 或模板 ID，跳过下发');
+    return false;
+  }
+
+  const payload = {
+    touser: touser,
+    template_id: templateId,
+    page: normalizePage(opts.page),
+    data: opts.data || {}
+  };
+  if (TMPL_MINIPROGRAM_STATE) payload.miniprogramState = TMPL_MINIPROGRAM_STATE;
+
+  try {
+    const res = await cloud.openapi.subscribeMessage.send(payload);
+    console.log('[application][' + scene + '] 下发成功 touser=' + touser +
+      ' res=' + JSON.stringify(res || {}));
+    return true;
+  } catch (err) {
+    // 43101 = 用户没授权/额度用完；43102 = 模板被停用；47003 = 字段格式不合法
+    console.warn('[application][' + scene + '] 下发失败（已忽略，不影响主流程）touser=' + touser +
+      ' code=' + errCodeOf(err) + ' msg=' + String((err && err.message) || ''));
+    return false;
+  }
+}
+
+/**
+ * 申请进度通知 → 发给发帖人（有人申请了你的帖子）
+ * 字段：thing9 申请人昵称 / thing3 申请内容（帖子标题）/ phrase2 固定「待处理」/ time4 申请时间
+ */
+async function notifyNewApplication(options) {
+  const opts = options || {};
+  const postId = String(opts.postId || '');
+  return sendSubscribeMessage({
+    scene: 'apply->poster',
+    touser: opts.receiverId,
+    templateId: TMPL_PROGRESS_ID,
+    // 跳转：直接进这条帖子的详情页（绝对路径，不带前导斜杠），发帖人可在那儿处理申请
+    page: 'pages/detail/detail?id=' + encodeURIComponent(postId),
+    data: {
+      thing9: { value: cutField(opts.applicantName, TMPL_THING_MAX, TMPL_APPLICANT_FALLBACK) },
+      thing3: { value: cutField(opts.postTitle, TMPL_THING_MAX, TMPL_THING_FALLBACK) },
+      phrase2: { value: TMPL_PENDING_TEXT },
+      time4: { value: formatTime(opts.time) }
+    }
+  });
+}
+
+/**
+ * 申请通过通知 → 发给申请人（你被录取了）
+ * 字段：name1 固定「您的申请已通过」/ thing2 申请内容（帖子标题）/ time3 通过时间
+ */
+async function notifyApplicationAccepted(options) {
+  const opts = options || {};
+  return sendSubscribeMessage({
+    scene: 'accept->applicant',
+    touser: opts.applicantId,
+    templateId: TMPL_ACCEPTED_ID,
+    // 跳转：任务页（tabBar 页也能直接打开），申请人在那儿看联系方式
+    page: 'pages/task/task',
+    data: {
+      // 固定短语：name 字段传常量，不走 cutField（无需截断，也不会出现空值）
+      name1: { value: TMPL_ACCEPTED_TITLE },
+      thing2: { value: cutField(opts.postTitle, TMPL_THING_MAX, TMPL_THING_FALLBACK) },
+      time3: { value: formatTime(opts.time) }
+    }
+  });
+}
+
 /* ---------------- apply：提交申请 ---------------- */
 
 async function handleApply(db, openid, event) {
@@ -505,11 +669,20 @@ async function handleApply(db, openid, event) {
         })
       });
       console.log('[application][apply] 重新申请，复用文档 id=' + existed._id);
-      return { ok: true, id: existed._id, status: STATUS_PENDING, reapply: true };
     } catch (err) {
       console.error('[application][apply] 重新申请写入失败 code=' + errCodeOf(err) + '：', err);
       return { ok: false, code: errCodeOf(err) || 'APPLY_FAILED', message: '申请提交失败，请稍后重试' };
     }
+    // 重新申请对发帖人来说也是「一条新申请」，同样下发进度通知；
+    // 刻意放在上面那个 try 之外：写库已成功，通知环节无论发生什么都不能把成功变成失败
+    await notifyNewApplication({
+      receiverId: receiverId,
+      applicantName: applicantName,
+      postTitle: String(post.title || ''),
+      postId: postId,
+      time: now
+    });
+    return { ok: true, id: existed._id, status: STATUS_PENDING, reapply: true };
   }
 
   const doc = Object.assign({}, snapshot, {
@@ -517,10 +690,11 @@ async function handleApply(db, openid, event) {
     _openid: openid
   });
 
+  let savedId = '';
   try {
     const res = await db.collection(APPLICATIONS).add({ data: doc });
-    console.log('[application][apply] 写入成功 id=' + res._id);
-    return { ok: true, id: res._id, status: STATUS_PENDING, reapply: false };
+    savedId = String((res && res._id) || '');
+    console.log('[application][apply] 写入成功 id=' + savedId);
   } catch (err) {
     if (!isMissingCollection(err)) {
       console.error('[application][apply] 写入失败 code=' + errCodeOf(err) + '：', err);
@@ -530,12 +704,23 @@ async function handleApply(db, openid, event) {
     await ensureCollection(db, APPLICATIONS);
     try {
       const retry = await db.collection(APPLICATIONS).add({ data: doc });
-      return { ok: true, id: retry._id, status: STATUS_PENDING, reapply: false };
+      savedId = String((retry && retry._id) || '');
     } catch (retryErr) {
       console.error('[application][apply] 建集合后重试仍失败：', retryErr);
       return { ok: false, code: errCodeOf(retryErr) || 'APPLY_FAILED', message: '申请提交失败，请稍后重试' };
     }
   }
+
+  // 申请进度通知（发给发帖人）：写库已成功，发送失败只 warn
+  await notifyNewApplication({
+    receiverId: receiverId,
+    applicantName: applicantName,
+    postTitle: String(post.title || ''),
+    postId: postId,
+    time: now
+  });
+
+  return { ok: true, id: savedId, status: STATUS_PENDING, reapply: false };
 }
 
 /* ---------------- updateStatus：同意 / 拒绝 ---------------- */
@@ -670,6 +855,16 @@ async function handleUpdateStatus(db, openid, event) {
   const payload = await buildDecisionPayload(db, app, status);
   console.log('[application][updateStatus] 成功 id=' + applicationId + ' -> ' + status +
     ' 申请人=' + (payload.applicantName || '(空)'));
+
+  // 只有「变成 accepted」才给申请人发通过通知（rejected 不发，避免骚扰）；
+  // 放在写库之后、返回值之前，发送失败不影响本次操作结果。
+  if (status === STATUS_ACCEPTED) {
+    await notifyApplicationAccepted({
+      applicantId: String(app.applicantId || app._openid || ''),
+      postTitle: String(app.postTitle || ''),
+      time: now
+    });
+  }
 
   return Object.assign({
     ok: true,

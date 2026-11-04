@@ -42,6 +42,8 @@ cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 const POSTS = 'posts';
 const REPORTS = 'reports';
 const USERS = 'users';
+// 【v1.6.5】举报人身份校验用：黑名单（注销 / 封禁）集合，客户端零权限，这里只读不写
+const BLACKLIST = 'blacklist';
 
 // 与小程序端 utils/constants.js 的 REPORT_CATEGORIES 保持一致
 const REPORT_REASONS = ['虚假信息', '违规内容', '骚扰谩骂', '其他'];
@@ -53,6 +55,10 @@ const DEDUPE_BY_REPORTER = true;
 // 自动风控阈值（与 cloudfunctions/admin、utils/constants.js 三处同值）
 const REPORT_WEIGHT_AUDIT_THRESHOLD = 3; // 3 个不同举报人 -> 自动审查（v1.8.0 从 5 回调）
 const WARNING_BAN_THRESHOLD = 3;         // 累计 3 次警告 -> 标记 banned（原来是 2）
+
+// 举报人被拦时的文案（与 cloudfunctions/publish、admin 同值）
+const BANNED_MESSAGE = '您的账号因违规已被限制使用';
+const BLACKLIST_MESSAGE = '该账号已注销或已被限制使用，如有疑问请联系管理员邮箱：xunhu_app@qq.com';
 
 function errCodeOf(err) {
   return String((err && (err.errCode || err.code)) || '');
@@ -79,7 +85,7 @@ function weightOf(doc) {
 }
 
 /**
- * 找发帖人的 users 文档（兼容 _openid / openid 两种历史写法）
+ * 找用户的 users 文档（发帖人 / 举报人共用；兼容 _openid / openid 两种历史写法）
  * 查不到 / 集合不存在一律返回 null，绝不让风控查询失败拖垮举报主流程
  */
 async function loadUserDoc(db, openid) {
@@ -92,10 +98,40 @@ async function loadUserDoc(db, openid) {
       if (doc) return doc;
     } catch (err) {
       if (isMissingCollection(err)) return null;
-      console.warn('[report] 读取发帖人 users 文档失败：', err && err.message);
+      console.warn('[report] 读取 users 文档失败：', err && err.message);
     }
   }
   return null;
+}
+
+/**
+ * 【v1.6.5】举报人自身是否被禁止举报
+ *   1) users.role === 'banned'：受罚者不可举报（口径「二、角色与账号权限」）；
+ *   2) openid 命中 blacklist：已注销 / 已被限制使用的账号不可举报。
+ * 查询失败一律放行：风控查询绝不能把正常用户的举报拖垮（与 publish / application 同策略）。
+ * @return {Promise<{allowed: boolean, code?: string, message?: string}>}
+ */
+async function checkReporterAllowed(db, openid) {
+  const doc = await loadUserDoc(db, openid);
+  if (doc && String(doc.role || 'user').toLowerCase() === 'banned') {
+    return { allowed: false, code: 'ACCOUNT_BANNED', message: BANNED_MESSAGE };
+  }
+  if (await isBlacklisted(db, openid)) {
+    return { allowed: false, code: 'ACCOUNT_BLOCKED', message: BLACKLIST_MESSAGE };
+  }
+  return { allowed: true };
+}
+
+async function isBlacklisted(db, openid) {
+  if (!openid) return false;
+  try {
+    const res = await db.collection(BLACKLIST).where({ openid: openid }).limit(1).get();
+    return !!((res && res.data) || []).length;
+  } catch (err) {
+    if (isMissingCollection(err)) return false;
+    console.warn('[report] blacklist 查询失败，按未命中处理：', err && err.message);
+    return false;
+  }
 }
 
 /**
@@ -144,6 +180,18 @@ exports.main = async (event) => {
     return { ok: false, code: 'NO_OPENID', message: '拿不到 openid，请从小程序端调用' };
   }
 
+  const db = cloud.database();
+  const _ = db.command;
+
+  // 【v1.6.5】0. 举报人身份校验（放在所有业务校验最前面）：
+  //   口径上「受罚者不可举报」，但前端口令只拦得住界面 —— 改包直接调云函数，就能用举报去刷
+  //   别人的 reportWeight（凑 3 个号即可把任意帖子打进审查）。这里补一道服务端兜底。
+  const reporter = await checkReporterAllowed(db, openid);
+  if (!reporter.allowed) {
+    console.warn('[report] 举报人身份被拦截 code=' + reporter.code + ' openid=' + openid);
+    return { ok: false, code: reporter.code, message: reporter.message };
+  }
+
   const payload = event || {};
   const postId = String(payload.postId || '').trim();
   const reason = String(payload.reason || '').trim();
@@ -155,9 +203,6 @@ exports.main = async (event) => {
   if (REPORT_REASONS.indexOf(reason) === -1) {
     return { ok: false, code: 'REASON_INVALID', message: '请选择举报类型' };
   }
-
-  const db = cloud.database();
-  const _ = db.command;
 
   // 1. 帖子必须存在
   let post = null;

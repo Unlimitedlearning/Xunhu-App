@@ -12,6 +12,7 @@
 
 const store = require("../../utils/store");
 const constants = require("../../utils/constants");
+const subscribe = require("../../utils/subscribe");
 
 const CATEGORY_LIST = constants.CATEGORY_LIST;
 const CONTENT_RISKY_MESSAGE = constants.CONTENT_RISKY_MESSAGE;
@@ -173,7 +174,17 @@ Page({
       return;
     }
 
-    // 4. 一人一帖：当前用户名下已有占用名额的帖子（active 进行中 / auditing 审查中）-> 弹窗拦截
+    // 4. 【一次性订阅消息】发帖人侧的授权点（模板 TMPL_ACCEPT_ID：申请进度通知）。
+    //    为什么必须在这里：上面 0~3 步全是同步校验，本行仍在本轮同步执行栈里；
+    //    再往下第一个 await（syncMyActivePost）之后发起，微信会判「非用户点击触发」直接 fail（20004）。
+    //    语义：发帖＝告诉用户「有人申请你的信息时，我给你发通知」，与云函数
+    //    cloudfunctions/application 的 notifyNewApplication（发给发帖人）一一对应。
+    //    用户拒绝 / 接口报错都只是 false，绝不拦截下面发布流程，所以结果不参与任何判定；
+    //    但仍把这个 Promise 留住，在第 7 步弹 loading 之前 await 掉——
+    //    真机上「订阅面板还开着就弹 showLoading」会把面板顶掉，等于用户授权不了。
+    const subscribeTask = subscribe.requestOne(constants.TMPL_ACCEPT_ID, 'publish');
+
+    // 5. 一人一帖：当前用户名下已有占用名额的帖子（active 进行中 / auditing 审查中）-> 弹窗拦截
     //    这里只是体验层（能改包绕过），云函数 publish 内还有一道查重做绝对防线
     let activeMine = null;
     try {
@@ -191,7 +202,7 @@ Page({
       return;
     }
 
-    // 5. 按 PRD 数据模型组装（status 不在这里定：云端通过才写 'active'）
+    // 6. 按 PRD 数据模型组装（status 不在这里定：云端通过才写 'active'）
     const newPost = {
       category: category,
       title: title,
@@ -202,8 +213,10 @@ Page({
       createTime: Date.now()
     };
 
-    // 6. 上传（云函数 publish 内部再做一次严格校一遍 + 一人一帖查重，才是绝对防线）
+    // 7. 上传（云函数 publish 内部再做一次严格校一遍 + 一人一帖查重，才是绝对防线）
     //    失败分流：能改的错误现场提示（不存草稿），只有网络/云函数异常才落盘 publish_draft
+    //    先等订阅授权面板关闭（无论允许/拒绝），避免 showLoading 把面板顶掉
+    await subscribeTask;
     wx.showLoading({ title: '发布中...', mask: true });
 
     let saved = null;

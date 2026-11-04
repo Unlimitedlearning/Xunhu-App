@@ -180,7 +180,7 @@ page {
   background-color: #e8f8ec;
   color: #07c160;
 }
-/* 同好-橙色 */
+/* 兴趣-橙色 */
 .category-partner {
   background-color: #fff3e0;
   color: #fb8c00;

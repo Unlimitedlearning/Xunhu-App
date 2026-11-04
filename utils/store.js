@@ -924,7 +924,8 @@ async function saveProfile(profile) {
 }
 
 /**
- * 注销账号（v1.6.0 合规）：写黑名单 + 删资料 + 帖子下架 + 级联清理，全部在 user 云函数完成。
+ * 注销账号（v1.6.0 合规 / v1.6.5 分流）：删资料 + 帖子下架 + 级联清理，全部在 user 云函数完成。
+ * 【v1.6.5】普通用户注销不写黑名单（可用同一个微信重新注册）；被封禁用户注销才写（banned_user_deleted）。
  * 前端只做两件事：调用 + 清空本地缓存/登录态（不然退出后内存里还留着旧资料）。
  * @return {Promise<{users:number,posts:number,applications:number,reviews:number,messages:number,contacts:number}>}
  */

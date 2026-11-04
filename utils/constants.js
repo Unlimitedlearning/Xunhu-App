@@ -55,19 +55,21 @@ const CLOUD_FUNCTIONS = {
 // 【v1.6.0 文案合规】partner 的展示文案统一改为「同好」
 //   为什么改：旧文案在小程序类目审核里最容易被判成「陌生人社交」（约陌生人线下见面），
 //   而本产品实际是「同好/活动组队」的信息发布工具（无 IM、无推荐算法、无用户检索）。
-//   注意：**枚举值 partner 保持不变**，只改展示文案 —— 数据库里历史帖子的 category 仍是 partner，
-//   改了枚举值等于让所有老帖子掉出分类匹配。改文案只影响这里与 CATEGORY_LIST。
+// 【v1.6.5 封版】「同好」仍带一点兴趣社交味道，展示文案再降一档改为「兴趣」：
+//   注意：**枚举值 partner 保持不变** —— 数据库里历史帖子的 category 仍是 partner，
+//   改了枚举值等于让所有老帖子掉出分类匹配。改文案只影响这里、CATEGORY_LIST，
+//   以及 cloudfunctions/review 的 CONTEXT_CATEGORY_MAP（评价上下文快照，新快照才会用新词）。
 const CATEGORY_MAP = {
   team: '组队',
   resume: '自荐',
-  partner: '同好'
+  partner: '兴趣'
 };
 
 // 分类列表（发布页 picker 用，顺序即 picker 顺序）
 const CATEGORY_LIST = [
   { key: 'team', text: '组队' },
   { key: 'resume', text: '自荐' },
-  { key: 'partner', text: '同好' }
+  { key: 'partner', text: '兴趣' }
 ];
 
 // 帖子状态：draft 草稿 / auditing 审核中（被举报打码）/ active 进行中（机审通过已上线）/ ended 已结束
@@ -348,12 +350,15 @@ const CAMPUS_INVALID_MESSAGE = '校区不在可选范围内，请重新选择';
 // 学号输入框下方说明（与协议 1.2 同一口径：只做账号唯一性校验，不接学籍系统）
 const STUDENT_ID_TIP = '学号仅用于账号唯一性校验，平台不接入学籍系统，不代表官方认证。';
 
-/* ---------------- 账号注销（v1.6.0 合规） ----------------
- * 注销 = 写黑名单 + 删 users + 帖子 status 改 deleted + 级联清理申请/评价/通知。
- * 黑名单只记 openid（不记昵称/学号/联系方式），否则「注销」就名不副实了。
+/* ---------------- 账号注销（v1.6.0 合规 / v1.6.5 分流） ----------------
+ * 注销 = 删 users + 帖子 status 改 deleted + 级联清理申请/评价/通知。
+ * 【v1.6.5 重要】黑名单只在「被封禁用户注销」时写（cloudfunctions/user → reason = banned_user_deleted）：
+ *   - 普通用户主动注销：不写黑名单，同一个微信号随时可以重新注册成新用户；
+ *   - 被封禁用户注销：写黑名单留住违规记录，否则「违规 -> 注销 -> 重注册」就能把永封洗掉。
+ * 黑名单只记 openid（不记昵称/学号/联系方式）。
  */
 const DELETE_ACCOUNT_TITLE = '注销账号';
-const DELETE_ACCOUNT_CONTENT = '注销后你的资料会被删除、发布的信息全部下架，已发出的申请与评价也会一并清理，且无法恢复。确定注销吗？';
+const DELETE_ACCOUNT_CONTENT = '注销将永久删除您的全部资料和历史记录。如需再次使用，请重新注册。确定注销吗？';
 const DELETE_ACCOUNT_REASON = 'user_deleted';
 
 /* ---------------- 个人通知 / 全体公告（v1.4.0） ----------------
@@ -368,17 +373,22 @@ const MESSAGE_EMPTY_TEXT = '暂无通知';
 const ANNOUNCEMENT_TITLE_MAX = 30;  // 公告标题上限（后台发布前后端同值校验）
 const ANNOUNCEMENT_CONTENT_MAX = 600; // 公告正文上限
 
-/* ---------------- 一次性订阅消息（v1.5.0） ----------------
- * 模板 ID 到「微信公众平台 → 功能 → 订阅消息 → 我的模板」申请后填到下面两个变量；
- * 留空时 utils/subscribe.js 直接跳过授权（不报错、不弹窗），申请 / 同意照常完成。
+/* ---------------- 一次性订阅消息（v1.5.0 授权 / v1.9.0 云端下发） ----------------
+ * 模板已申请完毕。两个 ID 与 cloudfunctions/application/index.js 里的
+ * TMPL_ACCEPTED_ID / TMPL_PROGRESS_ID 是同值副本（云函数独立打包读不到本文件），
+ * 换模板时两边必须一起改。
  *
- * 【重要】授权只是「允许发一条」，真正把消息发出去还必须由服务端调用：
+ *   TMPL_APPLY_ID  = 申请通过通知：申请人点「提交申请」时授权 → 同意后云端发给申请人
+ *                   字段 name1（固定「您的申请已通过」）/ thing2（申请内容·帖子标题）/ time3（通过时间）
+ *   TMPL_ACCEPT_ID = 申请进度通知：发帖人发帖（点「发布」）时授权 → 收到新申请时云端发给发帖人
+ *                   字段 thing9（申请人昵称）/ thing3（申请内容·帖子标题）/ phrase2（固定「待处理」）/ time4（申请时间）
+ *
+ * 授权只是「允许发一条」，真正发消息在 cloudfunctions/application 里做：
  *   cloud.openapi.subscribeMessage.send({ touser, template_id, page, data })
- * 所以模板 ID 填好之后，还需要在 cloudfunctions/application 里补一段发送逻辑，
- * 否则用户授权了也永远收不到通知（本次只做前端授权，未改云函数）。
+ * 一次性订阅：一条授权只能发一条，没额度时微信返回 43101，属正常业务态（云函数只 warn）。
  */
-const TMPL_APPLY_ID = '';  // 申请人点「提交申请」时订阅：申请结果通知（发给申请人自己）
-const TMPL_ACCEPT_ID = ''; // 发帖人点「同意申请」时订阅：新申请提醒（发给发帖人自己）
+const TMPL_APPLY_ID = 'DE4ywFc6fTB0pgJwrxCPMWN2AF8SUhiE9fuaTacvm5Q';  // 申请通过通知（发给申请人）
+const TMPL_ACCEPT_ID = 'FMSZc4FaBle4Cd7rRutVbrcuE3iqG5tFKAtctsehH1E'; // 申请进度通知（发给发帖人）
 
 // 学号校验：广工 10 位学号，以 31 开头（31 + 8 位数字）
 // 同一份规则必须在两处生效：

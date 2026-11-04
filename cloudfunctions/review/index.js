@@ -49,8 +49,8 @@ const RECEIVED_LIMIT = 20; // 个人页展示的评价条数
 /* ---------------- 合作上下文快照（contextSnapshot） ---------------- */
 
 // 分类英文枚举 -> 中文（与小程序端 constants.CATEGORY_MAP 同值副本）
-// 注：partner 的展示文案 v1.6.0 起为「同好」（枚举值不变，只改文案）
-const CONTEXT_CATEGORY_MAP = { team: '组队', resume: '自荐', partner: '同好' };
+// 注：partner 的展示文案 v1.6.5 起为「兴趣」（枚举值不变，只改文案）
+const CONTEXT_CATEGORY_MAP = { team: '组队', resume: '自荐', partner: '兴趣' };
 
 // 帖子查不到 / 标题异常（空、非字符串、全是空白）时的兜底文案
 const CONTEXT_FALLBACK = '【历史合作】';

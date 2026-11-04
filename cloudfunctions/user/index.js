@@ -18,7 +18,8 @@
 //     profile 白名单：nickname / campus / studentId / resume / contact
 //     campus（v1.6.0）：必填，只能是 CAMPUS_LIST 里的值，非法值直接拒
 //     nickname（v1.8.0）：全局唯一，被其他用户占用时回 NICKNAME_TAKEN（查重排除自己）
-//   { action: 'deleteAccount' }               -> { ok, removed: {...} }  注销账号 + 级联清理
+//   { action: 'deleteAccount' }               -> { ok, removed: {...}, role, blacklisted }  注销账号 + 级联清理
+//     【v1.6.5】按 role 分流：banned -> 写 blacklist（banned_user_deleted）；user -> 不写（可重新注册）
 //
 // 【v1.6.0】资料字段：campus（校区）是唯一的地域属性；早前版本的身份背书字段已下线，
 // 老文档里的残留值由下方 LEGACY_FIELDS 统一清除（不再接收、不再下发）。
@@ -660,16 +661,33 @@ exports.main = async (event) => {
     }
   }
 
-  // 【v1.6.0】账号注销（合规必需）：先黑名单 -> 再删资料 -> 再级联清理
+  // 【v1.6.0】账号注销（合规必需）/ 【v1.6.5】按「是否被封禁」分流
+  //   普通用户主动注销：只删数据，**不写黑名单** —— 同一个微信号之后登录就是全新用户；
+  //   被封禁用户注销：写黑名单留住违规记录（reason = banned_user_deleted），
+  //     否则「违规 -> 注销 -> 重新注册」就能把永封洗掉。
+  //   role 只从库里读，客户端传什么都不信（与 save 同一条约定）。
   if (action === 'deleteAccount') {
-    const blacklisted = await addToBlacklist(db, openid, 'user_deleted', 'self');
-    if (!blacklisted) {
-      // 黑名单写不进去就不往下删：否则用户删完还能重新登录，等于假注销
-      return {
-        ok: false,
-        code: 'BLACKLIST_WRITE_FAILED',
-        message: '注销失败，请确认 blacklist 集合已创建后重试'
-      };
+    let role = ROLE_USER;
+    try {
+      const existed = await findAll(db, openid);
+      if (existed && existed[0]) role = String(existed[0].role || ROLE_USER).toLowerCase();
+    } catch (err) {
+      console.warn('[user][deleteAccount] 读取 role 失败，按普通用户处理：', err && err.message);
+    }
+
+    const isBanned = role === ROLE_BANNED;
+    let blacklisted = false;
+
+    if (isBanned) {
+      blacklisted = await addToBlacklist(db, openid, 'banned_user_deleted', 'self');
+      if (!blacklisted) {
+        // 违规记录没留住就不往下删：否则封禁能被「注销 + 重新注册」洗掉
+        return {
+          ok: false,
+          code: 'BLACKLIST_WRITE_FAILED',
+          message: '注销失败，请确认 blacklist 集合已创建后重试'
+        };
+      }
     }
 
     const removed = { users: 0, posts: 0, applications: 0, reviews: 0, messages: 0, contacts: 0 };
@@ -704,8 +722,8 @@ exports.main = async (event) => {
     // 4) 帖子联系方式（_id = postId）：注销后没人该再看得到这些联系方式
     removed.contacts = await removeByWhere(db, POST_CONTACTS, { authorOpenid: openid }, 'post_contacts(author)');
 
-    console.log('[user][deleteAccount] openid=' + openid + ' 完成：', JSON.stringify(removed));
-    return { ok: true, removed: removed };
+    console.log('[user][deleteAccount] openid=' + openid + ' role=' + role + ' blacklisted=' + blacklisted + ' 完成：', JSON.stringify(removed));
+    return { ok: true, removed: removed, role: role, blacklisted: blacklisted };
   }
 
   // 对外公开信息已下线：详情页不再展示学号徽章，因此不保留任何「跨用户读别人资料」的接口

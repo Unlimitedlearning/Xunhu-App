@@ -418,8 +418,10 @@ Page({
   },
 
   /**
-   * 注销账号（v1.6.0 合规）：破坏性且不可恢复，必须二次确认。
-   * 云端做的事：写黑名单 -> 删 users -> 帖子 status 改 deleted -> 级联清理申请/评价/通知。
+   * 注销账号（v1.6.0 合规 / v1.6.5 分流）：破坏性且不可恢复，必须二次确认。
+   * 云端做的事：删 users -> 帖子 status 改 deleted -> 级联清理申请/评价/通知。
+   * 【v1.6.5】普通用户注销不写黑名单，可以用同一个微信重新注册；
+   *           被封禁用户注销才写黑名单（banned_user_deleted），留住违规记录。
    */
   handleDeleteAccount: function () {
     if (!this.data.isLogin) {
@@ -454,7 +456,7 @@ Page({
 
       wx.showModal({
         title: '账号已注销',
-        content: '你的资料与发布内容已清理。如需重新使用，请联系管理员邮箱 ' + constants.ADMIN_CONTACT_EMAIL,
+        content: '你的资料与发布内容已清理。如需再次使用，请重新注册。',
         showCancel: false,
         confirmText: '我知道了'
       });

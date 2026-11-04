@@ -20,9 +20,11 @@
 //   { action: 'list', limit }            大厅列表（客户端对 posts 零权限，只能由这里下发）
 //                                         -> { ok: true, list: [...] }（白名单字段）
 //   { action: 'get', postId }             单条帖子（分享直达 / 缓存没命中）-> { ok: true, post }
-//   { action: 'end', postId }            结束自己的帖子（仅 active）-> { ok: true, status: 'ended', endTime }
+//   { action: 'end', postId }            结束自己的帖子（仅 active）-> { ok: true, status: 'ended', endTime, rejectedApplications }
+//                                        同时把该帖下所有 pending 申请强制 rejected（v1.9.1，解任务页「卡死」）
 //                                        审查中 -> { ok: false, code: 'POST_AUDITING' }
-//   { action: 'delete', postId }         删除自己的帖子（仅 active，连带 post_contacts）-> { ok: true }
+//   { action: 'delete', postId }         删除自己的帖子（仅 active）-> { ok: true, status: 'deleted' }
+//                                        【v1.9.1 合规】status 保留 deleted，但正文 / 标签彻底脱敏 + post_contacts 物理删除
 //                                        审查中 -> { ok: false, code: 'POST_AUDITING' }
 //   { action: 'contact', postId }        取联系方式（作者 / 已同意申请人）-> { ok: true, contact }
 //   { action: 'migrateContacts' }        【一次性迁移】把历史 posts.contact 搬到 post_contacts
@@ -48,6 +50,15 @@ const USERS = 'users';
 
 // 迁移时的单次批大小（服务端 SDK 上限 1000，内测量级取 100 足够）
 const MIGRATE_BATCH = 100;
+
+/* 【v1.9.1 作者删帖】软删除 + 彻底脱敏
+ * 为什么不再物理删 posts：评价 / 举报要保留「合作上下文」快照，帖子整条消失会让它们变成孤儿；
+ *   但正文 / 标签必须当场抹掉，否则「删了」只是从大厅消失，内容还在库里躺着（合规说不过去）。*/
+const DELETED_CONTENT_TEXT = '该内容已删除';
+
+// 帖子结束 / 删除时自动拒绝 pending 申请写入的原因（任务页会按这个字段展示文案）
+const POST_ENDED_REJECT_REASON = '帖子已结束';
+const POST_DELETED_REJECT_REASON = '帖子已删除';
 
 function errCodeOf(err) {
   return String((err && (err.errCode || err.code)) || '');
@@ -170,7 +181,61 @@ async function handleGet(db, event) {
 
   const post = await getPost(db, postId);
   // 不存在不当错误：详情页展示「信息不存在」即可，不要用一个失败弹窗拦住用户
-  return { ok: true, post: post ? toClientPost(post) : null };}
+  return { ok: true, post: post ? toClientPost(post) : null };
+}
+
+/* ---------------- 结束帖子后的收尾：自动关闭 pending 申请 ----------------
+ * 【v1.9.1 交互死锁修复】以前帖子 ended 之后，pending 申请依旧停在「待处理」：
+ *   发帖人还能看到【同意 / 拒绝】，点同意 -> POST_ENDED（「该信息已结束，无法再同意新的申请」），
+ *   点拒绝才勉强能消掉。于是任务页永远挂着一堆点不动的卡片 —— 用户体感就是「卡死了」。
+ * 现在结束帖子的同时把 pending 全改 rejected（注明「帖子已结束」；删帖时注明「帖子已删除」）；
+ * 云函数 application 的 list 里还有第二道扫尾（盖老数据）。
+ * 注意：任何异常只记日志，不能让「已成功结束」变成失败。
+ */
+async function rejectPendingApplications(db, postId, now, reason) {
+  const _ = db.command;
+  const rejectReason = reason || POST_ENDED_REJECT_REASON;
+  let rejected = 0;
+
+  for (let round = 0; round < 5; round++) {
+    let ids = [];
+    try {
+      const res = await db.collection(APPLICATIONS)
+        .where({ postId: postId, status: 'pending' })
+        .limit(100)
+        .field({ _id: true })
+        .get();
+      ids = ((res && res.data) || []).map(function (doc) {
+        return doc && doc._id;
+      }).filter(Boolean);
+    } catch (err) {
+      if (!isMissingCollection(err)) {
+        console.warn('[post][end] 读取待处理申请失败（不影响结束结果）：', err && err.message);
+      }
+      return rejected;
+    }
+
+    if (!ids.length) return rejected;
+
+    try {
+      await db.collection(APPLICATIONS).where({ _id: _.in(ids) }).update({
+        data: {
+          status: 'rejected',
+          statusUpdateTime: now,
+          rejectReason: rejectReason,
+          autoRejected: true,
+          handledBy: 'system'
+        }
+      });
+      rejected += ids.length;
+    } catch (err) {
+      console.error('[post][end] 自动拒绝 pending 申请失败（不影响结束结果）：', err && err.message);
+      return rejected;
+    }
+  }
+
+  return rejected;
+}
 
 /* ---------------- action: end ---------------- */
 
@@ -194,7 +259,15 @@ async function handleEnd(db, openid, event) {
   const status = String(post.status || '');
   // 幂等：已经结束过就直接返回原来的时间（连点 / 双设备）
   if (status === 'ended') {
-    return { ok: true, status: 'ended', endTime: Number(post.endTime) || Date.now(), already: true };
+    // 顺手再扫一遍 pending：盖「本次修复之前就已经结束」的帖子和漏网的脏数据
+    const settled = await rejectPendingApplications(db, postId, Date.now());
+    return {
+      ok: true,
+      status: 'ended',
+      endTime: Number(post.endTime) || Date.now(),
+      already: true,
+      rejectedApplications: settled
+    };
   }
   // 【v1.7.2】审查中的帖子绝对拦截（先判状态，再判完才写库）：
   //   结束后的帖子会进「往期历史」照常可读，等于让被举报的内容绕过审核队列；
@@ -221,7 +294,14 @@ async function handleEnd(db, openid, event) {
   }
 
   console.log('[post][end] 成功 postId=' + postId + ' openid=' + openid);
-  return { ok: true, status: 'ended', endTime: now };
+
+  // 结束成功后立刻把 pending 申请全部改成 rejected（失败只记日志，不影响结束结果）
+  const rejectedCount = await rejectPendingApplications(db, postId, now);
+  if (rejectedCount) {
+    console.log('[post][end] 已自动拒绝 pending 申请 ' + rejectedCount + ' 条 postId=' + postId);
+  }
+
+  return { ok: true, status: 'ended', endTime: now, rejectedApplications: rejectedCount };
 }
 
 /* ---------------- action: delete ---------------- */
@@ -258,21 +338,46 @@ async function handleDelete(db, openid, event) {
   }
 
   try {
-    await db.collection(POSTS).doc(postId).remove();
+    /* 【v1.9.1 合规】不物理删 posts：保留 status = 'deleted'（评价 / 举报需要合作上下文），
+     * 但正文、标签当场抹掉，历史遗留的 contact 字段也一并移除 ——
+     * 否则「作者删帖」只是从大厅消失，内容仍躺在库里，与「彻底删除」的承诺不符。*/
+    await db.collection(POSTS).doc(postId).update({
+      data: {
+        status: 'deleted',
+        deleteTime: Date.now(),
+        deleteReason: 'author_deleted',
+        content: DELETED_CONTENT_TEXT,
+        tags: [],
+        contact: db.command.remove()
+      }
+    });
   } catch (err) {
     console.error('[post][delete] 删除失败 postId=' + postId + ' code=' + errCodeOf(err) + '：', err);
     return { ok: false, code: errCodeOf(err) || 'DELETE_FAILED', message: '操作失败，请稍后重试' };
   }
 
-  // 联系方式是「附属数据」，删帖子时一起清掉（失败不影响主流程）
+  /* 联系方式是「附属数据」，必须**物理删除**（只靠 status = deleted 不算删干净）：
+   * post_contacts 的 _id = postId，按 doc 删；再用 postId 字段补扫一遍（防历史写入形状不一致）。
+   * 失败不影响主流程：帖子已脱敏，联系方式也不会再被 post 云函数下发给任何人。*/
   try {
     await db.collection(POST_CONTACTS).doc(postId).remove();
   } catch (err) {
     console.warn('[post][delete] 联系方式清理失败（不影响结果）：', err && err.message);
   }
+  try {
+    await db.collection(POST_CONTACTS).where({ postId: postId }).remove();
+  } catch (err) {
+    if (!isMissingCollection(err)) {
+      console.warn('[post][delete] 联系方式补扫失败（不影响结果）：', err && err.message);
+    }
+  }
 
-  console.log('[post][delete] 成功 postId=' + postId + ' openid=' + openid);
-  return { ok: true };
+  // 该帖下的 pending 申请也一并关掉：帖子都删了，留着「待处理」只会让发帖人点出一个报错
+  const rejectedCount = await rejectPendingApplications(db, postId, Date.now(), POST_DELETED_REJECT_REASON);
+
+  console.log('[post][delete] 成功 postId=' + postId + ' openid=' + openid +
+    ' 自动拒绝申请=' + rejectedCount);
+  return { ok: true, status: 'deleted', rejectedApplications: rejectedCount };
 }
 
 /* ---------------- action: contact ---------------- */

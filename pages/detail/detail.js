@@ -526,9 +526,9 @@ Page({
 
     wx.showLoading({ title: '处理中...', mask: true });
 
-    let endTime;
+    let endResult;
     try {
-      endTime = await store.endPost(post.id);
+      endResult = await store.endPost(post.id);
     } catch (err) {
       wx.hideLoading();
       console.error('[detail] 结束信息失败 code=' + (err && err.code) + '：', err);
@@ -540,6 +540,10 @@ Page({
 
     wx.hideLoading();
 
+    // 【v1.9.1】云端在结束帖子的同时会把这个帖子下所有 pending 申请改成 rejected（注明「帖子已结束」）
+    const endTime = (endResult && endResult.endTime) || Date.now();
+    const rejectedCount = Number(endResult && endResult.rejectedApplications) || 0;
+
     // 本页立即同步为已结束：左侧按钮变「已结束」置灰，顶部状态徽章同步
     this.setData({
       post: Object.assign({}, post, { status: 'ended', endTime: endTime }),
@@ -548,7 +552,12 @@ Page({
       isEnded: true
     });
 
-    wx.showToast({ title: '已结束该信息', icon: 'none' });
+    wx.showToast({
+      title: rejectedCount > 0
+        ? '已结束，' + rejectedCount + ' 条申请已自动关闭'
+        : '已结束该信息',
+      icon: 'none'
+    });
   },
 
   /**

@@ -20,6 +20,9 @@
 //     nickname（v1.8.0）：全局唯一，被其他用户占用时回 NICKNAME_TAKEN（查重排除自己）
 //   { action: 'deleteAccount' }               -> { ok, removed: {...}, role, blacklisted }  注销账号 + 级联清理
 //     【v1.6.5】按 role 分流：banned -> 写 blacklist（banned_user_deleted）；user -> 不写（可重新注册）
+//     【v1.9.1 合规修复】以前只把帖子 status 改成 deleted（正文 / 标签 / 联系方式仍躺在库里），
+//       现在改为**物理删除**：posts（我发的全部）+ post_contacts + 级联 applications / reviews / messages。
+//       顺序：先收集 postIds -> 删附属数据 -> 删帖子 -> 删 users（帖子删完就再也查不到它名下的数据了）。
 //
 // 【v1.6.0】资料字段：campus（校区）是唯一的地域属性；早前版本的身份背书字段已下线，
 // 老文档里的残留值由下方 LEGACY_FIELDS 统一清除（不再接收、不再下发）。
@@ -414,48 +417,93 @@ async function removeByWhere(db, collection, where, label) {
   return removed;
 }
 
-// 自己发的帖子全部改 status = 'deleted'（不物理删：已收发的评价 / 举报需要保留上下文）
-async function markPostsDeleted(db, openid) {
+// 按「某个字段 in 一批值」删除（值多了自动分批：in 数组过长会被服务端拒绝）
+async function removeByValues(db, collection, field, values, label) {
   const _ = db.command;
-  let updated = 0;
-  const now = Date.now();
+  const list = (values || []).filter(Boolean);
+  let removed = 0;
 
-  for (let round = 0; round < 50; round++) {
-    let ids = [];
+  for (let i = 0; i < list.length; i += 100) {
+    const where = {};
+    where[field] = _.in(list.slice(i, i + 100));
+    removed += await removeByWhere(db, collection, where, label);
+  }
+
+  return removed;
+}
+
+// 按 _id 批量物理删除（分批 100，单批出错只记日志）
+async function removeByIds(db, collection, ids, label) {
+  const _ = db.command;
+  let removed = 0;
+
+  for (let i = 0; i < ids.length; i += 100) {
+    const chunk = ids.slice(i, i + 100);
     try {
-      const res = await db.collection(POSTS)
-        .where({ authorOpenid: openid, status: _.neq('deleted') })
-        .limit(100)
-        .field({ _id: true })
-        .get();
-      ids = ((res && res.data) || []).map(function (doc) {
-        return doc && doc._id;
-      }).filter(Boolean);
+      await db.collection(collection).where({ _id: _.in(chunk) }).remove();
+      removed += chunk.length;
     } catch (err) {
-      if (!isMissingCollection(err)) {
-        console.warn('[user][deleteAccount] 读取帖子失败：', err && err.message);
-      }
-      return updated;
-    }
-
-    if (!ids.length) return updated;
-
-    try {
-      await db.collection(POSTS).where({ _id: _.in(ids) }).update({
-        data: {
-          status: 'deleted',
-          deleteTime: now,
-          deleteReason: 'user_deleted'
-        }
-      });
-      updated += ids.length;
-    } catch (err) {
-      console.error('[user][deleteAccount] 下架帖子失败：', err && err.message);
-      return updated;
+      console.error('[user][deleteAccount] 删除 ' + label + ' 失败：', err && err.message);
     }
   }
 
-  return updated;
+  return removed;
+}
+
+/**
+ * 【v1.9.1 合规】注销前先收集「我发的所有帖子 _id」
+ * 为什么必须先取到：posts 一旦物理删除，就再也查不出这些帖子名下的申请 / 评价 / 联系方式，
+ *   结果就是库里留下一堆指向已消失帖子的孤儿数据（合规清理等于没做完）。
+ * 兼容两种历史写法：新帖子写 authorOpenid，老帖子只有 _openid。
+ */
+async function collectPostIds(db, openid) {
+  const wheres = [{ authorOpenid: openid }, { _openid: openid }];
+  const seen = {};
+  const ids = [];
+
+  for (let w = 0; w < wheres.length; w++) {
+    for (let page = 0; page < 20; page++) {
+      let rows = [];
+      try {
+        const res = await db.collection(POSTS)
+          .where(wheres[w])
+          .skip(page * 100)
+          .limit(100)
+          .field({ _id: true })
+          .get();
+        rows = (res && res.data) || [];
+      } catch (err) {
+        if (!isMissingCollection(err)) {
+          console.warn('[user][deleteAccount] 读取帖子失败：', err && err.message);
+        }
+        break;
+      }
+
+      rows.forEach(function (doc) {
+        const id = doc && doc._id;
+        if (!id || seen[id]) return;
+        seen[id] = true;
+        ids.push(id);
+      });
+
+      if (rows.length < 100) break;
+    }
+  }
+
+  return ids;
+}
+
+/**
+ * 【v1.9.1 合规】物理删除我发的所有帖子
+ * 旧实现只写 status = 'deleted'：标题 / 正文 / 标签 / 联系方式全留在 posts 里，
+ *   「注销」只是把大厅入口关掉，数据一条没删 —— 与隐私政策 3.5「永久删除全部资料与历史记录」不符。
+ * 现在：按 _id 批量删干净，再按归属字段补扫一遍（防收集 ID 期间刚好有人发新帖）。
+ */
+async function deletePosts(db, openid, postIds) {
+  let removed = await removeByIds(db, POSTS, postIds, 'posts');
+  removed += await removeByWhere(db, POSTS, { authorOpenid: openid }, 'posts(authorOpenid)');
+  removed += await removeByWhere(db, POSTS, { _openid: openid }, 'posts(_openid)');
+  return removed;
 }
 
 exports.main = async (event) => {
@@ -692,7 +740,39 @@ exports.main = async (event) => {
 
     const removed = { users: 0, posts: 0, applications: 0, reviews: 0, messages: 0, contacts: 0 };
 
-    // 1) 删 users（含历史重复行）
+    /* 0) 先把我名下所有帖子 _id 记下来：
+     *    帖子删掉之后，applications / reviews / post_contacts 里指向它的记录就再也定位不到了。*/
+    const postIds = await collectPostIds(db, openid);
+    console.log('[user][deleteAccount] openid=' + openid + ' 待清理帖子数=' + postIds.length);
+
+    /* 1) 帖子附属数据并行清理（互不依赖，减少整体耗时，避免云函数超时）：
+     *    · 申请：我发出的 / 我收到的 / 我的帖子上别人交的
+     *    · 评价：我写的 / 我收到的 / 我的帖子上产生的
+     *    · 通知：发给我 / 我创建的
+     *    · 联系方式：我写的 + 挂在我帖子上的（_id = postId）*/
+    const results = await Promise.all([
+      removeByWhere(db, APPLICATIONS, { applicantId: openid }, 'applications(applicantId)'),
+      removeByWhere(db, APPLICATIONS, { receiverId: openid }, 'applications(receiverId)'),
+      removeByWhere(db, APPLICATIONS, { _openid: openid }, 'applications(_openid)'),
+      removeByValues(db, APPLICATIONS, 'postId', postIds, 'applications(postId)'),
+      removeByWhere(db, REVIEWS, { reviewerOpenid: openid }, 'reviews(reviewer)'),
+      removeByWhere(db, REVIEWS, { revieweeOpenid: openid }, 'reviews(reviewee)'),
+      removeByValues(db, REVIEWS, 'postId', postIds, 'reviews(postId)'),
+      removeByWhere(db, MESSAGES, { _openid: openid }, 'messages(_openid)'),
+      removeByWhere(db, MESSAGES, { toOpenid: openid }, 'messages(toOpenid)'),
+      removeByWhere(db, POST_CONTACTS, { authorOpenid: openid }, 'post_contacts(author)'),
+      removeByValues(db, POST_CONTACTS, '_id', postIds, 'post_contacts(_id=postId)')
+    ]);
+
+    removed.applications = results[0] + results[1] + results[2] + results[3];
+    removed.reviews = results[4] + results[5] + results[6];
+    removed.messages = results[7] + results[8];
+    removed.contacts = results[9] + results[10];
+
+    // 2) 物理删除我发的所有帖子（旧实现只改 status，正文一直留在库里）
+    removed.posts = await deletePosts(db, openid, postIds);
+
+    // 3) 最后删 users 资料（含历史重复行）：资料是「人的最后一条痕迹」，放最后删更好排障
     try {
       const docs = await findAll(db, openid);
       for (let i = 0; i < docs.length; i++) {
@@ -706,21 +786,6 @@ exports.main = async (event) => {
     } catch (err) {
       console.warn('[user][deleteAccount] 读取资料失败：', err && err.message);
     }
-
-    // 2) 自己发的帖子全部下架（status -> deleted）
-    removed.posts = await markPostsDeleted(db, openid);
-
-    // 3) 级联清理：我发出的 / 我收到的申请与评价，以及我收到的通知
-    removed.applications += await removeByWhere(db, APPLICATIONS, { applicantId: openid }, 'applications(applicantId)');
-    removed.applications += await removeByWhere(db, APPLICATIONS, { receiverId: openid }, 'applications(receiverId)');
-    removed.applications += await removeByWhere(db, APPLICATIONS, { _openid: openid }, 'applications(_openid)');
-    removed.reviews += await removeByWhere(db, REVIEWS, { reviewerOpenid: openid }, 'reviews(reviewer)');
-    removed.reviews += await removeByWhere(db, REVIEWS, { revieweeOpenid: openid }, 'reviews(reviewee)');
-    removed.messages += await removeByWhere(db, MESSAGES, { _openid: openid }, 'messages(_openid)');
-    removed.messages += await removeByWhere(db, MESSAGES, { toOpenid: openid }, 'messages(toOpenid)');
-
-    // 4) 帖子联系方式（_id = postId）：注销后没人该再看得到这些联系方式
-    removed.contacts = await removeByWhere(db, POST_CONTACTS, { authorOpenid: openid }, 'post_contacts(author)');
 
     console.log('[user][deleteAccount] openid=' + openid + ' role=' + role + ' blacklisted=' + blacklisted + ' 完成：', JSON.stringify(removed));
     return { ok: true, removed: removed, role: role, blacklisted: blacklisted };

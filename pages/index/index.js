@@ -88,6 +88,25 @@ Page({
   // 未进 data 的页面级字段：全部帖子的格式化结果（Tab 切换的唯一数据源）
   postPool: [],
 
+  /**
+   * 缓存失效订阅（v1.9.1）：云端判定帖子已删除 / 作者已注销时，store 会剔掉本地缓存并回调这里，
+   * 大厅立即重渲染，不用等下一次 onShow（否则已删的帖子会一直挂在列表里）。
+   * onLoad 只跑一次；onUnload 里必须退订，否则回调会在堆栈里累积。
+   */
+  onLoad: function () {
+    if (this.offCachePurged) return;
+    this.offCachePurged = store.onCachePurged(() => {
+      this.renderFromCacheOnly();
+    });
+  },
+
+  onUnload: function () {
+    if (this.offCachePurged) {
+      this.offCachePurged();
+      this.offCachePurged = null;
+    }
+  },
+
   onShow: function () {
     // 0) 底部「我的」红点全局强提醒：有未读通知 / 新公告时亮红点
     //    （TabBar 页面上调用才生效；失败 / 未登录 / 云函数未部署都静默降级，不影响下面渲染）
@@ -142,6 +161,16 @@ Page({
     const cached = store.hydrateFromCache();
     if (!cached.posts) return; // 首次安装 / 清理过缓存：等 refreshList 吧
 
+    this.postPool = store.getPosts().map(item => this.formatPost(item));
+    this.setData({ loaded: true });
+    this.applyTab(this.data.activeTab);
+  },
+
+  /**
+   * 只重渲染当前缓存（不请求网络）：缓存被云端判定失效（删帖 / 注销）时用，
+   * 保证屏幕上不会继续挂着一条已经不存在的信息。
+   */
+  renderFromCacheOnly: function () {
     this.postPool = store.getPosts().map(item => this.formatPost(item));
     this.setData({ loaded: true });
     this.applyTab(this.data.activeTab);

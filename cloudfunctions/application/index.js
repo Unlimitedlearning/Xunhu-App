@@ -27,6 +27,9 @@
 //     -> { ok: true, sent: [...], received: [...] }  已联查 posts / users，字段见 handleList
 //        sent[].contact / sent[].authorStudentId：发帖人的联系方式 / 完整学号（仅 accepted）
 //        received[].applicantContact / applicantStudentId：申请人的联系方式 / 完整学号（仅 accepted）
+//        sent[] / received[] 都带 postStatus 与 rejectReason：
+//          帖子已结束（status = ended）的 pending 申请会在本次 list 里自动改成 rejected，
+//          rejectReason = '帖子已结束'（v1.9.1 修「任务页交互死锁」的第二道扫尾）。
 //
 // 隐私红线（与 store / task 页一致）：
 //   pending / rejected 的申请，**永远不下发**对方的联系方式与完整学号；
@@ -64,6 +67,9 @@ const BLACKLIST_MESSAGE = '该账号已注销或已被限制使用，如有疑�
 const BANNED_MESSAGE = '您的账号因违规已被限制使用';
 
 const MAX_ROWS = 100; // 单次 list 的拉取上限（服务端 SDK 上限 1000，内测量级 100 足够）
+
+// 帖子结束后自动拒绝 pending 申请时写入的原因（与 cloudfunctions/post 同值）
+const POST_ENDED_REJECT_REASON = '帖子已结束';
 
 /* ---------------- 订阅消息模板（v1.9.0） ----------------
  * 与 utils/constants.js 的 TMPL_APPLY_ID / TMPL_ACCEPT_ID 同值副本
@@ -876,6 +882,56 @@ async function handleUpdateStatus(db, openid, event) {
 
 /* ---------------- list：我发出的 + 我收到的（联查 posts / users） ---------------- */
 
+/* ---------------- 帖子结束后的扫尾（v1.9.1） ----------------
+ * 【交互死锁】帖主结束帖子后，旧的 pending 申请还停在「待处理」：
+ *   任务页上同意 -> POST_ENDED（“该信息已结束”），拒绝 -> 才能消掉，看上去就是按钮坏了。
+ * 收尾逻辑的主战场是 cloudfunctions/post（结束帖子时当场把 pending 改 rejected）；
+ * 这里只是第二道扫尾：拉列表时发现「申请还 pending，但它关联的帖子已经 ended」就直接补一刀，
+ *   盖住两类数据 —— 本次修复之前就已结束的老帖子、以及 post 云函数未部署造成的漏网。
+ * 只认「帖子确实存在且 status === 'ended'」：帖子查不到时不动（查不到 ≠ 已结束）。
+ */
+async function sweepEndedApplications(db, docs, postMap) {
+  const now = Date.now();
+  const ids = [];
+
+  (docs || []).forEach(function (doc) {
+    if (!doc || !doc._id) return;
+    if (String(doc.status || STATUS_PENDING) !== STATUS_PENDING) return;
+    const post = (postMap || {})[String(doc.postId || '')] || null;
+    if (!post || String(post.status || '') !== 'ended') return;
+
+    ids.push(doc._id);
+    // 先把内存里的文档改掉：buildXxxItem 直接用新状态组装，不用等下一轮拉取
+    doc.status = STATUS_REJECTED;
+    doc.statusUpdateTime = now;
+    doc.rejectReason = POST_ENDED_REJECT_REASON;
+    doc.autoRejected = true;
+  });
+
+  if (!ids.length) return 0;
+
+  const _ = db.command;
+  // 分批 100：in 数组过长会被服务端拒绝（send + received 合起来可能接近 200 条）
+  for (let i = 0; i < ids.length; i += 100) {
+    try {
+      await db.collection(APPLICATIONS).where({ _id: _.in(ids.slice(i, i + 100)) }).update({
+        data: {
+          status: STATUS_REJECTED,
+          statusUpdateTime: now,
+          rejectReason: POST_ENDED_REJECT_REASON,
+          autoRejected: true,
+          handledBy: 'system'
+        }
+      });
+    } catch (err) {
+      // 写失败不影响本次列表展示（内存里已按 rejected 组装），下次拉取还会再试
+      console.warn('[application][list] 自动关闭 pending 申请失败 code=' + errCodeOf(err) + '：', err && err.message);
+    }
+  }
+
+  return ids.length;
+}
+
 function buildSentItem(app, postMap, contactMap, profileMap) {
   const post = postMap[app.postId] || null;
   const status = String(app.status || STATUS_PENDING);
@@ -897,7 +953,9 @@ function buildSentItem(app, postMap, contactMap, profileMap) {
     status: status,
     createTime: Number(app.createTime) || 0,
     statusUpdateTime: Number(app.statusUpdateTime) || 0,
-    // 只有 accepted 才下发发帖人联系方式（pending / rejected 一律空）
+    // 拒绝原因：帖子已结束时云端自动拒绝会写「帖子已结束」，任务页折叠区直接展示这句
+    rejectReason: String(app.rejectReason || ''),
+    autoRejected: !!app.autoRejected,
     // 联系方式优先取 post_contacts（客户端读不到），老帖子未迁移时回退 post.contact
     contact: status === STATUS_ACCEPTED && post
       ? String(((contactMap || {})[app.postId]) || post.contact || '')
@@ -931,6 +989,9 @@ function buildReceivedItem(app, postMap, profileMap) {
     status: status,
     createTime: Number(app.createTime) || 0,
     statusUpdateTime: Number(app.statusUpdateTime) || 0,
+    // 拒绝原因：帖子已结束时云端自动拒绝会写「帖子已结束」
+    rejectReason: String(app.rejectReason || ''),
+    autoRejected: !!app.autoRejected,
     // 联系方式 / 学号：只在 accepted 后给收帖人；值一律现查 users（不依赖文档里的明文快照）
     applicantContact: isAccepted ? String(profile.contact || app.applicantContact || '') : '',
     applicantStudentId: isAccepted ? String(profile.studentId || app.applicantStudentId || '') : ''
@@ -967,6 +1028,16 @@ async function handleList(db, openid) {
   const postMap = await loadPosts(db, sentDocs.concat(receivedDocs).map(function (doc) {
     return doc.postId;
   }));
+
+  // 扫尾：帖子已结束的 pending 申请一律改成 rejected（详见 sweepEndedApplications 注释）
+  try {
+    const swept = await sweepEndedApplications(db, sentDocs.concat(receivedDocs), postMap);
+    if (swept) {
+      console.log('[application][list] 帖子已结束，自动关闭 pending 申请 ' + swept + ' 条 openid=' + openid);
+    }
+  } catch (err) {
+    console.warn('[application][list] 扫尾异常（不影响列表下发）：', err && err.message);
+  }
 
   // 联查 users 的对象有两类：
   //   1) 我收到的申请 -> 申请人（昵称 / 简历 / 联系方式 / 完整学号）

@@ -140,6 +140,9 @@ function normalizeApplication(doc) {
     authorOpenid: raw.authorOpenid || '',
     contact: raw.contact || '',
     status: raw.status || 'pending',
+    // 【v1.9.1】拒绝原因 / 是否云端自动拒绝：任务页折叠区直接展示（如「帖子已结束」）
+    rejectReason: raw.rejectReason || '',
+    autoRejected: !!raw.autoRejected,
     createTime: raw.createTime || 0,
     statusUpdateTime: raw.statusUpdateTime || 0
   });
@@ -182,6 +185,67 @@ function clearSnapshot(key) {
   }
 }
 
+/* ---------------- 缓存失效（v1.9.1） ----------------
+ * 为什么要有：缓存（cache_posts / cache_author_{openid}）是「缓存先行秒开」的前提，
+ *   但它也是「内容删了还在」的根源 —— 作者删帖 / 账号注销后，其他用户本机还留着标题、正文、名片快照。
+ * 策略：云端一旦明确说这条没了（status === 'deleted' 或帖子查不到），就当场把本地相关缓存删干净，
+ *   并通过 emitCachePurged 通知「正在显示的页面」重渲染，而不是等下一次 onShow。
+ */
+const cachePurgeListeners = [];
+
+/**
+ * 订阅缓存失效事件（页面在 onLoad 里订阅、onUnload 里退订）
+ * @param {function({type:string, postIds?:string[]})} handler
+ * @return {function} 退订函数
+ */
+function onCachePurged(handler) {
+  if (typeof handler !== 'function') return function () {};
+  cachePurgeListeners.push(handler);
+  return function () {
+    const index = cachePurgeListeners.indexOf(handler);
+    if (index > -1) cachePurgeListeners.splice(index, 1);
+  };
+}
+
+// 通知页面：缓存里被剔掉东西了，请重新渲染（单个回调抛错不能影响其他回调）
+function emitCachePurged(detail) {
+  const info = detail || {};
+  cachePurgeListeners.slice().forEach(function (handler) {
+    try {
+      handler(info);
+    } catch (err) {
+      console.warn('[store] 缓存失效回调异常（已忽略）：', err);
+    }
+  });
+}
+
+/**
+ * 把一条帖子从内存缓存 + 本地快照里剔掉（帖子已删除 / 云端查不到）
+ * 连它的发帖人名片快照一起清：对方注销或到处删帖时，名片里的昵称 / 简历也不应该继续展示。
+ * @return {boolean} 是否真的删掉了东西（false = 缓存里本来就没有，不用重渲染）
+ */
+function purgePostCache(postId, reason) {
+  const id = String(postId || '');
+  if (!id) return false;
+
+  const removed = [];
+  cache.posts = cache.posts.filter(function (item) {
+    if (item && item.id === id) {
+      removed.push(item);
+      return false;
+    }
+    return true;
+  });
+  if (!removed.length) return false;
+
+  writeSnapshot(STORAGE_KEYS.CACHE_POSTS, cache.posts);
+  removed.forEach(function (item) {
+    clearAuthorCardCache(item.authorOpenid);
+  });
+  emitCachePurged({ type: reason || 'post_removed', postIds: [id] });
+  return true;
+}
+
 /**
  * 缓存先行：把本地快照灌回内存缓存（只在内存为空时灌，不覆盖已经拉到的云数据）
  * 页面用法：store.hydrateFromCache() -> 同步读 store.getPosts() / getApplications() -> setData
@@ -196,6 +260,8 @@ function hydrateFromCache() {
     if (snapshot) {
       cache.posts = snapshot.list
         .map(normalizePost)
+        // 【v1.9.1】旧快照里可能还留着已删帖：灌入时就丢掉，避免「首帧闪现一条已删的信息」
+        .filter(function (post) { return post.id && post.status !== 'deleted'; })
         .sort(function (a, b) { return (b.createTime || 0) - (a.createTime || 0); });
       posts = cache.posts.length;
     }
@@ -224,10 +290,36 @@ async function pullPosts(maxFetch) {
     const limit = Number(maxFetch) || constants.POSTS_FETCH_LIMIT;
     const result = await callPostFunction({ action: 'list', limit: limit });
     const rows = Array.isArray(result.list) ? result.list : [];
-    cache.posts = rows
-      .map(normalizePost)
-      .sort(function (a, b) { return (b.createTime || 0) - (a.createTime || 0); });
+
+    /* 【v1.9.1 缓存失效】status === 'deleted' 的帖子一律不进缓存：
+     * 作者删帖（正文脱敏 + 联系方式物理删除）或账号被注销后，别的用户本地还留着标题与正文快照，
+     * 等于「删了还在」。这里直接丢掉，并把它发帖人的名片快照一起清掉，
+     * 最后 emitCachePurged 通知在显示的页面重渲染（不用等下一次 onShow）。*/
+    const aliveRows = [];
+    const deadRows = [];
+    rows.forEach(function (row) {
+      const post = normalizePost(row);
+      if (!post.id) return; // 没有 _id 的脏数据不渲染
+      if (post.status === 'deleted') {
+        deadRows.push(post);
+        return;
+      }
+      aliveRows.push(post);
+    });
+
+    cache.posts = aliveRows.sort(function (a, b) { return (b.createTime || 0) - (a.createTime || 0); });
     writeSnapshot(STORAGE_KEYS.CACHE_POSTS, cache.posts); // 缓存先行：落盘快照，下次冷启动秒开
+
+    if (deadRows.length) {
+      deadRows.forEach(function (post) {
+        clearAuthorCardCache(post.authorOpenid);
+      });
+      emitCachePurged({
+        type: 'posts_deleted',
+        postIds: deadRows.map(function (post) { return post.id; })
+      });
+    }
+
     return cache.posts;
   } catch (err) {
     reportFetchError(COLLECTIONS.POSTS, err);
@@ -384,7 +476,15 @@ async function fetchPostById(postId) {
     // 云函数 post action:'get'（posts 对客户端零权限，客户端已无法 doc(id).get()）
     const result = await callPostFunction({ action: 'get', postId: id });
     const doc = result.post || null;
-    if (!doc) return null;
+    /* 【v1.9.1 缓存失效】云端说「这条没了」就不再当成可用帖子：
+     *   · doc 为空：帖子被物理删除（账号注销级联 / 后台清理）；
+     *   · status === 'deleted'：作者删帖（内容已脱敏）或违规下架。
+     * 两种情况都要把本地缓存 + 快照 + 发帖人名片一起清掉，否则离线 / 下次冷启动还会渲染旧内容。*/
+    if (!doc || String(doc.status || '') === 'deleted') {
+      purgePostCache(id, doc ? 'post_deleted' : 'post_missing');
+      return null;
+    }
+
     const post = normalizePost(doc);
     const exists = cache.posts.some(function (item) {
       return item && item.id === post.id;
@@ -496,7 +596,9 @@ async function callPostFunction(data) {
 
 /**
  * 结束自己的帖子：status -> 'ended' + endTime（云端校验作者身份，客户端不再直写）
- * @return {number} endTime 时间戳
+ * 【v1.9.1】云端同时会把该帖下所有 pending 申请强制改成 rejected（注明「帖子已结束」），
+ * 这里顺手把申请列表也刷一遍，任务页回到前台时不会还挂着一条点不动的「待处理」。
+ * @return {{endTime:number, rejectedApplications:number}}
  */
 async function endPost(postId) {
   if (!postId) throw new Error('缺少帖子 ID');
@@ -511,6 +613,7 @@ async function endPost(postId) {
   }
 
   const endTime = Number(result.endTime) || Date.now();
+  const rejectedApplications = Number(result.rejectedApplications) || 0;
 
   // 同步内存缓存：详情页返回大厅时（onShow 之前）也不会渲染成「进行中」
   const cached = cache.posts.find(function (item) { return item.id === postId; });
@@ -525,7 +628,14 @@ async function endPost(postId) {
     console.warn('[store] 结束后重新拉取帖子失败，已用本地缓存兜底：', err);
   }
 
-  return endTime;
+  // 申请列表也刷一次（pending -> rejected 是云端刚批量改的）
+  try {
+    await pullApplications();
+  } catch (err) {
+    console.warn('[store] 结束后刷新申请列表失败（进任务页会重拉）：', err);
+  }
+
+  return { endTime: endTime, rejectedApplications: rejectedApplications };
 }
 
 /**
@@ -936,6 +1046,10 @@ async function deleteAccount() {
   // 本地清理：帖子快照 / 申请快照 / 登录标记 / 内存缓存的个人数据
   clearSnapshot(STORAGE_KEYS.CACHE_POSTS);
   clearSnapshot(STORAGE_KEYS.CACHE_APPLICATIONS);
+  // 【v1.9.1】自己的名片快照也删：注销后 openid 已失效，但本机 Storage 里还留着昵称 / 简历 / 好评率
+  clearAuthorCardCache(cache.openid);
+  // 帖子缓存也清空：云端已经把我的帖子物理删除，本机不该再显示
+  cache.posts = [];
   logout();
 
   return result.removed || {};
@@ -1266,7 +1380,18 @@ async function fetchAuthorProfile(input) {
   }
   // 失败时云端也会回空结构，走同一套归一化（等价于空名片），前端无需分叉；
   // ready 标记本次结果是否可信（false 时调用方不要拿它覆盖本地缓存）
-  return normalizeAuthorCard(result, !!result.ok);
+  const card = normalizeAuthorCard(result, !!result.ok);
+
+  /* 【v1.9.1 缓存失效】作者已注销 / 资料已被删除：users 里查不到这个人时，
+   * getAuthorProfile 依然回 ok:true，只是 author 全空。
+   * 这时必须把 cache_author_{openid} 快照删掉，否则下次打开详情页仍会先渲染旧昵称 / 简历 / 好评率。
+   * 判定条件同时要求「昵称空 + 简历空」：昵称在 save 时是必填，两个都空只可能是文档已不存在，
+   * 不会因为「对方只是没写简历」而误删缓存。*/
+  if (card.ready && !card.nickname && !card.resume) {
+    clearAuthorCardCache(authorOpenid);
+  }
+
+  return card;
 }
 
 /**
@@ -1301,6 +1426,21 @@ function writeAuthorCardCache(authorOpenid, card) {
     wx.setStorageSync(AUTHOR_CACHE_PREFIX + openid, card);
   } catch (err) {
     console.warn('[store] 写发布者名片缓存失败：', err);
+  }
+}
+
+/**
+ * 【v1.9.1】删掉某个人的名片快照
+ * 触发场景：对方账号已注销（users 查不到）、对方的帖子被删（status = 'deleted'）。
+ * 不清的话，详情页首屏会先拿旧快照渲染出已注销用户的昵称 / 简历 / 好评率。
+ */
+function clearAuthorCardCache(authorOpenid) {
+  const openid = String(authorOpenid || '');
+  if (!openid) return;
+  try {
+    wx.removeStorageSync(AUTHOR_CACHE_PREFIX + openid);
+  } catch (err) {
+    console.warn('[store] 清理发布者名片缓存失败：', err);
   }
 }
 
@@ -1707,6 +1847,8 @@ module.exports = {
   getState,
   getOpenId,
   hydrateFromCache,
+  // 缓存失效订阅（v1.9.1）：页面在 onLoad 订阅、onUnload 退订
+  onCachePurged,
 
   // posts
   getPosts,
@@ -1768,6 +1910,7 @@ module.exports = {
   emptyAuthorCard,
   readAuthorCardCache,
   writeAuthorCardCache,
+  clearAuthorCardCache,
 
   // 管理后台（云函数 admin，仅 role === 'admin' 可用）
   isAdmin,

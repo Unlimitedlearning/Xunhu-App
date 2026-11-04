@@ -135,6 +135,48 @@ page {
   background-color: #f0f0f0;
 }
 
+/* ---------- 已归档申请（v1.9.1） ----------
+   已拒绝 / 已完成 / 关联信息已删除的申请默认折叠，展开后也要一眼看出「这条已经不用管了」。*/
+.app-card-archived {
+  background-color: #fafbfc;
+  box-shadow: none;
+}
+
+.app-card-archived .post-title {
+  color: #666666;
+  font-weight: normal;
+}
+
+.archive-tag {
+  display: inline-block;
+  margin-top: 4rpx;
+  margin-bottom: 8rpx;
+  font-size: 22rpx;
+  color: #8a8a8a;
+  background-color: #f0f1f3;
+  padding: 4rpx 14rpx;
+  border-radius: 8rpx;
+}
+
+/* 折叠入口：一条安静的灰色文字条，不抢主流程的注意力 */
+.archived-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10rpx;
+  margin: 8rpx 0 20rpx;
+  padding: 22rpx 0;
+  font-size: 24rpx;
+  color: #9a9a9a;
+  background-color: #ffffff;
+  border-radius: var(--radius-card, 24rpx);
+}
+
+.archived-arrow {
+  font-size: 20rpx;
+  color: #b0b0b0;
+}
+
 .card-body {
   display: flex;
   align-items: center;

@@ -32,18 +32,21 @@
 
   <!-- Tab 1：我发出的申请 -->
   <view class="list-wrap" wx:if="{{activeTab === 0}}">
-    <view class="app-card" wx:for="{{sentList}}" wx:key="id">
+    <view class="app-card {{item.archived ? 'app-card-archived' : ''}}" wx:for="{{sentList}}" wx:key="id">
       <view class="card-header" bindtap="goToDetail" data-postid="{{item.postId}}">
         <text class="post-title">{{item.postTitle}}</text>
         <view class="status-badge status-{{item.status}}">{{item.statusText}}</view>
       </view>
 
+      <!-- 已归档的卡片标一句原因（已拒绝 / 已完成 / 关联信息已删除），展开时才看得到 -->
+      <view class="archive-tag" wx:if="{{item.archived && item.archiveReason}}">{{item.archiveReason}}</view>
+
       <view class="card-body">
         <text class="info-item">发帖人：{{item.authorName}}</text>
       </view>
 
-      <!-- 我提交的申请附言（自己写的，随时可回顾为什么申请） -->
-      <view class="note-block" wx:if="{{item.hasApplyNote}}">
+      <!-- 我提交的申请附言（自己写的，随时可回顾为什么申请）；已归档的卡片不再展开长文本 -->
+      <view class="note-block" wx:if="{{item.hasApplyNote && !item.archived}}">
         <text class="note-label">我的申请附言</text>
         <view class="note-text">{{item.applyNote}}</view>
       </view>
@@ -77,13 +80,21 @@
 
       <view class="card-footer">
         <text class="tip-text" wx:if="{{item.status === 'pending'}}">发起人还在考虑，耐心等等～</text>
+        <text class="tip-text" wx:elif="{{item.autoRejected}}">该信息已结束，申请已自动关闭</text>
         <text class="tip-text" wx:elif="{{item.status === 'rejected'}}">很遗憾，这次没搭上</text>
+        <text class="tip-text" wx:elif="{{item.finished}}">已完成，评价已提交</text>
         <text class="tip-text" wx:elif="{{item.postEnded}}">该信息已结束，可以给对方评价了</text>
         <text class="tip-text" wx:else>申请已通过，快去联系发起人吧</text>
       </view>
     </view>
 
-    <view class="empty-state" wx:if="{{sentList.length === 0}}">
+    <!-- 已处理 / 已失效的申请：默认折叠，点一下才展开（v1.9.1 保持任务页清爽） -->
+    <view class="archived-toggle" wx:if="{{sentArchivedCount > 0}}" bindtap="toggleArchived">
+      <text>{{showArchived ? '收起已处理的申请' : '已隐藏 ' + sentArchivedCount + ' 条已处理 / 已失效的申请'}}</text>
+      <text class="archived-arrow">{{showArchived ? '▲' : '▼'}}</text>
+    </view>
+
+    <view class="empty-state" wx:if="{{sentList.length === 0 && sentArchivedCount === 0}}">
       <text class="icon">📤</text>
       <view class="text">你还没有申请过任何项目哦</view>
       <view class="sub-text">去「大厅」看看有没有合适的机会吧</view>
@@ -92,11 +103,14 @@
 
   <!-- Tab 2：我收到的申请 -->
   <view class="list-wrap" wx:else>
-    <view class="app-card" wx:for="{{receivedList}}" wx:key="id">
+    <view class="app-card {{item.archived ? 'app-card-archived' : ''}}" wx:for="{{receivedList}}" wx:key="id">
       <view class="card-header" bindtap="goToDetail" data-postid="{{item.postId}}">
         <text class="post-title">{{item.postTitle}}</text>
         <view class="status-badge status-{{item.status}}">{{item.statusText}}</view>
       </view>
+
+      <!-- 已归档的卡片标一句原因（已拒绝 / 帖子已结束 / 已完成 / 关联信息已删除） -->
+      <view class="archive-tag" wx:if="{{item.archived && item.archiveReason}}">{{item.archiveReason}}</view>
 
       <!-- 申请人信息：昵称 / 简历 / 附言，全部由云函数 application.list 联查 users 下发 -->
       <view class="applicant-block">
@@ -105,18 +119,18 @@
           <text class="applicant-tag" wx:if="{{item.hasResume}}">已填简历</text>
         </view>
 
-        <!-- 简历 / 技能描述：没有就明说，避免发帖人以为小程序坏了 -->
-        <view class="note-block" wx:if="{{item.hasResume}}">
+        <!-- 简历 / 技能描述：没有就明说，避免发帖人以为小程序坏了（已归档的卡片不再展开长文本） -->
+        <view class="note-block" wx:if="{{item.hasResume && !item.archived}}">
           <text class="note-label">简历 / 技能</text>
           <view class="note-text">{{item.applicantResume}}</view>
         </view>
-        <view class="note-block note-block-empty" wx:else>
+        <view class="note-block note-block-empty" wx:elif="{{!item.archived}}">
           <text class="note-label">简历 / 技能</text>
           <view class="note-text">对方还没有填写简历</view>
         </view>
 
         <!-- 申请附言：发帖人判断要不要同意的核心依据 -->
-        <view class="note-block note-block-apply">
+        <view class="note-block note-block-apply" wx:if="{{!item.archived}}">
           <text class="note-label">申请附言</text>
           <view class="note-text">{{item.applyNoteText}}</view>
         </view>
@@ -162,13 +176,21 @@
       <view class="review-hint" wx:if="{{devDebug && item.reviewHint}}">⚠ 无评价按钮：{{item.reviewHint}}</view>
 
       <view class="card-footer" wx:if="{{!item.isPending}}">
-        <text class="tip-text" wx:if="{{item.status === 'rejected'}}">你已拒绝该申请</text>
+        <text class="tip-text" wx:if="{{item.autoRejected}}">{{item.archiveReason}}</text>
+        <text class="tip-text" wx:elif="{{item.status === 'rejected'}}">你已拒绝该申请</text>
+        <text class="tip-text" wx:elif="{{item.finished}}">已完成，评价已提交</text>
         <text class="tip-text" wx:elif="{{item.postEnded}}">该信息已结束，可以给申请人评价了</text>
         <text class="tip-text" wx:else>已同意，可联系申请人进一步沟通</text>
       </view>
     </view>
 
-    <view class="empty-state" wx:if="{{receivedList.length === 0}}">
+    <!-- 已处理 / 已失效的申请：默认折叠，点一下才展开（v1.9.1 保持任务页清爽） -->
+    <view class="archived-toggle" wx:if="{{receivedArchivedCount > 0}}" bindtap="toggleArchived">
+      <text>{{showArchived ? '收起已处理的申请' : '已隐藏 ' + receivedArchivedCount + ' 条已处理 / 已失效的申请'}}</text>
+      <text class="archived-arrow">{{showArchived ? '▲' : '▼'}}</text>
+    </view>
+
+    <view class="empty-state" wx:if="{{receivedList.length === 0 && receivedArchivedCount === 0}}">
       <text class="icon">📭</text>
       <view class="text">暂时还没有人申请你的项目</view>
       <view class="sub-text">发布一条信息，让同学找到你</view>

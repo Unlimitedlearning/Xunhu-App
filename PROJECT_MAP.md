@@ -8,7 +8,7 @@
 - 技术栈：微信原生小程序（WXML / WXSS / JS，无构建工具）+ 微信云开发（云函数 + 云数据库）
 - 代码根目录：`D:\GithubProgram\XunHu`
 - 云环境 ID：`utils/constants.js` → `CLOUD_ENV`（`cloud1-d3g0izqlv27c2ee8d`）
-- 当前形态：内测版本，12 个云函数 / 10 个集合 / 8 个页面（v1.7.0：统一审核流）
+- 当前形态：内测版本，12 个云函数 / 10 个集合 / 8 个页面（v1.9.1：注销 / 删帖物理删除 + 前端缓存失效 + 任务页归档折叠）
 
 ---
 
@@ -69,9 +69,9 @@ app.js                     启动：wx.cloud.init(CLOUD_ENV) + store.init() 预�
 
 | 路由 | 一句话职责 | 进入方式 | 关键入口（js） |
 |---|---|---|---|
-| `pages/index/index` | **大厅**：三个 Tab（最新发布 / 最热招募 / 往期历史）列表渲染与筛选，卡片点击进详情，右下角 `+` 进发布 | tabBar | `onShow`（缓存先行 → `refreshList`）、`applyTab` / `onTabChange`、`formatPost`、`goToDetail`、`goToPublish` |
+| `pages/index/index` | **大厅**：三个 Tab（最新发布 / 最热招募 / 往期历史）列表渲染与筛选，卡片点击进详情，右下角 `+` 进发布 | tabBar | `onShow`（缓存先行 → `refreshList`）、`applyTab` / `onTabChange`、`formatPost`、`goToDetail`、`goToPublish`、`onCachePurged`（帖子失效即时重渲染 `renderFromCacheOnly`） |
 | `pages/detail/detail` | **详情页**：帖子全文 + 发布者名片 + 底部主按钮（发帖人=去任务页/结束，访客=报名）+ 举报；`?admin=1` 为管理员预览审查帖通道 | 大厅卡片 / 分享直达 | `onLoad`、`loadAuthorCard`、`onActionClick`（报名 / 结束分流）、`askApplyNote` + `confirmApply`、`onEndClick`、`onReportClick` |
-| `pages/task/task` | **任务页**：申请流转工作台（我发出的 / 我收到的）+ 同意拒绝 + 双向评价入口；未登录或资料不完善只显示引导 | tabBar | `refreshList`（唯一网络入口）、`renderList`、`onAcceptTap` / `onRejectTap`、`openReviewModal` / `submitReview`；`DEV_DEBUG` 排障开关 |
+| `pages/task/task` | **任务页**：申请流转工作台（我发出的 / 我收到的）+ 同意拒绝 + 双向评价入口；未登录或资料不完善只显示引导 | tabBar | `refreshList`（唯一网络入口）、`renderList`、`onAcceptTap` / `onRejectTap`、`openReviewModal` / `submitReview`、`toggleArchived`（已拒绝 / 已完成 / 帖子已删的申请默认折叠，`showArchived` 控制）；`DEV_DEBUG` 排障开关 |
 | `pages/profile/profile` | **我的**：登录（只确认 openid）+ 资料维护（昵称唯一/校区/学号/简历/联系方式）+ 收到的评价与好评率 + 管理员入口 + 注销账号 | tabBar | `refreshProfile`、`handleLogin` / `handleLogout`、`saveProfile`（v1.8.0：`isSaving` 防连点 + `NICKNAME_TAKEN` 提示）、`onCampusChange`、`handleDeleteAccount`、`renderReviews`、`onAdminTap` |
 | `pages/publish/publish` | **发布页**：分类/标题/描述/标签/联系方式表单 + 前端违禁词轻量拦截 + 提交云端发布；失败存本地草稿 `publish_draft`（v1.8.0 重新接上） | 大厅 `+` | `onLoad`（恢复草稿）、`onSubmit`（拼全文 → `checkTextViolation` → `store.savePost`）、`handleUploadError`（错误分流 + 写草稿） |
 | `pages/admin/admin` | **管理后台**：三个 Tab（内容审核 / 学号申诉 / 系统公告）；内容审核队列卡片顶部显示 `auditReason` 标签，底部只有【通过】与【下架（选原因）】；学号申诉可【记警告】【封禁】【强制解绑】；进页先校验 `role === 'admin'` | 我的 → 管理员入口 | `guardAndLoad`、`onTabChange`、`loadAuditQueue`、`onAuditApproveTap` / `onAuditRejectTap`（ActionSheet 选原因）、`runAuditAction`、`searchUser`、`onWarningTap` / `onBanTap`、`onUnbindTap`、`goPostDetail`（`?admin=1`）、`publishAnnouncement` |
@@ -98,9 +98,10 @@ app.js                     启动：wx.cloud.init(CLOUD_ENV) + store.init() 预�
 | `基础设施` | `callFunction` 封装、`cache` 状态（posts / applications / profile / myReviews / receivedReviews）、`PERMISSION_HINTS` |
 | `字段规范化` | `normalizePost` / `normalizeApplication` 等，所有云文档字段兜底 |
 | `本地快照（缓存先行 / 秒开）` | `hydrateFromCache`、`saveSnapshot`（`CACHE_POSTS` / `CACHE_APPLICATIONS`） |
+| `缓存失效（v1.9.1）` | `onCachePurged` / `emitCachePurged`（页面订阅 → 即时重渲染）、`purgePostCache`、`clearAuthorCardCache`：云端说「这条没了」就剔内存缓存 + 落盘快照 + 发帖人名片快照 |
 | `初始化` | `init()`：取 openid → 拉 posts / applications / profile |
 | `云函数封装` | 统一 `callFunction` + 业务错误码透传 |
-| `帖子 posts` | `syncPosts`（只拉最新 20 条）/ `getPosts` / `findPost` / `fetchPostById` / `fetchPostContact` / `savePost` / `endPost`（走云函数 `post`） |
+| `帖子 posts` | `syncPosts`（只拉最新 20 条）/ `getPosts` / `findPost` / `fetchPostById`（v1.9.1：`deleted` 或查不到 → 顺手清缓存）/ `fetchPostContact` / `savePost` / `endPost`（走云函数 `post`） |
 | `一人一帖` | `findMyActivePost` / `syncMyActivePost` |
 | `申请 applications` | `syncApplications`（只走云函数 `application`，直读降级通道已删）、`addApplication`、`updateApplicationStatus` |
 | `热度 heat` / `热度防刷` | `resolveHeat` / `persistHeat`、`claimHeatOnce`（本地 `local_heat_history`） |
@@ -121,15 +122,15 @@ app.js                     启动：wx.cloud.init(CLOUD_ENV) + store.init() 预�
 | 云函数 | action（入参 `event.action`） | 负责什么 | 关键拦截 |
 |---|---|---|---|
 | `login` | 无 | 下发调用者 `openid` / `appid` / `unionid` | 先查 `blacklist`：注销 / 封禁的 openid 直接拒（不下发 openid） |
-| `user` | `get` / `save`（默认 `get`）/ `deleteAccount` | 读写 `users`：昵称 / 校区 / 学号 / 简历 / 联系方式；`deleteAccount` = 写 `blacklist` + 删资料 + 帖子改 `deleted` + 级联清理申请/评价/通知 | 学号正则 `^31\d{8}$`、学号唯一性、`campus` 白名单、资料违禁词、`role` 不可写、黑名单拦截 |
+| `user` | `get` / `save`（默认 `get`）/ `deleteAccount` | 读写 `users`：昵称 / 校区 / 学号 / 简历 / 联系方式；**【v1.9.1】`deleteAccount` = 写 `blacklist`（仅 banned）+ 物理删除我发的全部 `posts` + 级联删 `post_contacts` / `applications` / `reviews` / `messages` + 最后删 `users`** | 学号正则 `^31\d{8}$`、学号唯一性、`campus` 白名单、资料违禁词、`role` 不可写、黑名单拦截 |
 | `initDb` | `{}` / `{ diagnose: true }` | 创建 **10** 个集合；自检各集合是否存在 / 条数 | 仅服务端 SDK 可 `createCollection` |
 | `heat` | `{ postId }` | 帖子热度原子自增 `_.inc` | 单次 `MAX_DELTA = 5` 防刷；管理员预览不加热度 |
 | `publish` | 无（单一入口） | 发布唯一写入口：词库校验 + 可选机审 → **仅「有违规记录」强制 `auditing`，其余（含新号首帖）直接 `active`**（v1.8.0 取消首帖审核）；`status` / `authorOpenid` / `authorName` / `authorCampus` 均服务端决定 | 违禁词（绝对防线）、一人一帖 `ALREADY_HAS_ACTIVE`、`role==='banned'` / 黑名单拒发、机审 `CONTENT_RISKY` |
-| `application` | `apply` / `updateStatus` / `list` | 申请流转**唯一入口**：提交申请（附言必填）、同意/拒绝、联查 posts + users 下发列表；accepted 后给申请人发一条站内通知 | `receiverId === openid` 才能改状态；`pending/rejected` 永不下发联系方式与完整学号；黑名单 / `campus` 不合法拒接 |
+| `application` | `apply` / `updateStatus` / `list` | 申请流转**唯一入口**：提交申请（附言必填）、同意/拒绝、联查 posts + users 下发列表；accepted 后给申请人发一条站内通知；**【v1.9.1】`list` 末尾扫尾：申请还是 `pending` 但关联帖子确实已 `ended` → 自动改 `rejected`（`rejectReason='帖子已结束'`）** | `receiverId === openid` 才能改状态；`pending/rejected` 永不下发联系方式与完整学号；黑名单 / `campus` 不合法拒接 |
 | `report` | 无（单一入口） | 举报落库 + `posts.reportWeight +1`（同一举报人不重复加权）+ 自动审查 / 自动封禁 | 禁举报自己；`reportWeight ≥ 3` → `auditing` 且 `warningCount +1`（v1.8.0 阈值从 5 回调到 3）；`warningCount ≥ 3` → `role='banned'`（只标记 + `banSource/banTime` 留痕，**不切断前端**）；`auditDismissed` 者不重复扣警告 |
 | `review` | `submit` / `get` / `mine` / `received` | 双向评价唯一读写入口：提交（只 `add` 不 update）、查重、我发出的、我收到的匿名统计 | 禁自评、`rating` 只能 1/0、必须有 accepted 申请关系、帖子必须 `ended`、同帖同人唯一 `ALREADY_REVIEWED`、评价正文违禁词 |
 | `getAuthorProfile` | 无（`{ postId }` 或 `{ authorOpenid }`） | 详情页「发布者名片」：一次返回 `users` 简历 + `reviews` 匿名统计与最近 3 条 | 用 `postId` 反查真实 `authorOpenid`（不信客户端），字段白名单，不下发 openid / 联系方式 / 学号 |
-| `post` | `end` / `delete` / `contact` / `migrateContacts` | 帖子状态唯写入口（结束 / 删除）+ 联系方式按关系下发 + 历史 contact 迁移 | 服务端校 `authorOpenid === openid`，`end` 只写 `status/endTime`；**【v1.7.2】`status === 'auditing'` 的帖子 `end` / `delete` 一律拒接（`POST_AUDITING`），只有 `active` 允许作者改状态**（否则「发违规 → 进审核 → 自己删掉」可销毁举报证据）；`contact` 仅作者或 accepted 申请人可见 |
+| `post` | `end` / `delete` / `contact` / `migrateContacts` | 帖子状态唯写入口（结束 / 删除）+ 联系方式按关系下发 + 历史 contact 迁移；**【v1.9.1】`delete` 不物理删 posts 但当场脱敏（`content='该内容已删除'` / `tags=[]` / `contact` 字段移除）+ 物理删 `post_contacts`；`end` / `delete` 都自动把该帖 `pending` 申请改 `rejected`（原因分别为「帖子已结束」/「帖子已删除」）** | 服务端校 `authorOpenid === openid`，`end` 只写 `status/endTime`；**【v1.7.2】`status === 'auditing'` 的帖子 `end` / `delete` 一律拒接（`POST_AUDITING`），只有 `active` 允许作者改状态**（否则「发违规 → 进审核 → 自己删掉」可销毁举报证据）；`contact` 仅作者或 accepted 申请人可见 |
 | `message` | `list` / `read` / `badge` | 消息中心：个人通知（20 条）+ 置顶公告（3 条）+ 红点计数 | 只下发属于自己（`toOpenid` / `_openid`）的记录；`read` 先校归属 |
 | `admin` | `getAuditQueue` / `approve` / `reject` / `searchUser` / `addWarning` / `banUser` / `unbind` / `publishAnnouncement` | 管理后台（v1.7.0 统一审核流）：**待办队列（只批量联查 reports + users，拼 auditReason 标签：被用户举报 / 违规用户发布）**、通过上线 / 下架（警告 +1 · 满 3 封禁 · 举报全部置 resolved · 通知作者）、按学号查人、记警告、封禁（写 `blacklist`）、强制解绑、发布公告 | 每个 action 先校验 `users.role === 'admin'`，否则 `FORBIDDEN`；不能对管理员记警告 / 封禁；破坏性操作写 `admin_logs`；旧 action（`getReports` / `ignore` / `violate` / `getAuditingPosts` / `approvePost` / `deletePost`）返回 `ACTION_DEPRECATED`；**【v1.8.0】不再统计发帖人历史帖数（「新用户首帖」标签已删，每页少一批读）** |
 
@@ -140,15 +141,74 @@ app.js                     启动：wx.cloud.init(CLOUD_ENV) + store.init() 预�
 **审核策略（v1.8.0）**：发布只按「有无前科」判 —— `warningCount > 0` 进 `auditing`，其余（含新号首帖）直接 `active`；
 取消首帖审核后，内容风险由举报兜底：`reportWeight ≥ 3` 即打码进审。
 
+### 4.1 删除 / 注销的数据清理口径（v1.9.1，**改删除相关代码前必读**）
+
+> 背景：内测前复盘发现的**合规漏洞** —— 旧实现里「作者删帖」只改 `status`、「账号注销」只改帖子状态，
+> 正文 / 标签 / 联系方式仍躺在库里，与隐私政策「永久删除全部资料与历史记录」不符。
+> 下面的口径是**产品承诺的兑现代码**，不得为了让某个页面好写而退回「只改状态」。
+
+**A. 作者主动删帖 —— `cloudfunctions/post` → action `delete`**
+
+| 数据 | 处理方式 |
+|---|---|
+| `posts` | **保留文档**（评价 / 举报 / 名片需要「合作上下文」），`status='deleted'` + `deleteTime` + `deleteReason='author_deleted'`，并**当场脱敏**：`content='该内容已删除'`、`tags=[]`、`contact` 字段 `command.remove()` 物理移除 |
+| `post_contacts` | **物理删除**：`doc(postId).remove()` → 再 `where({postId}).remove()` 补扫（兼容历史写入形状）；失败只记日志 |
+| `applications`（该帖） | 所有 `pending` → `rejected`，写 `rejectReason='帖子已删除'` / `autoRejected=true` / `handledBy='system'` |
+| 为什么 posts 不物理删 | 整条删掉会让 reviews / reports / 名片变孤儿；正文已抹掉即内容层面彻底删除。**若将来改为物理删 posts，必须同步处理这三处引用** |
+
+**B. 账号注销 —— `cloudfunctions/user` → action `deleteAccount`（顺序不可调）**
+
+1. **先取 `_id`**：`collectPostIds()` 按 `authorOpenid` + `_openid`（历史写法）收齐我发的全部帖子 id；
+   （帖子一删，就再也没法按 `postId` 定位它名下的申请 / 评价 / 联系方式 → 必留孤儿数据）
+2. **并行清附属数据**：`applications`（applicantId / receiverId / _openid / postId in）、`reviews`（reviewerOpenid / revieweeOpenid / postId in）、
+   `messages`（_openid / toOpenid）、`post_contacts`（authorOpenid / `_id` in postIds）—— 全部**物理删除**；
+3. **物理删 posts**：`_id in` 分批 + 按 `authorOpenid` / `_openid` 补扫（防收 id 期间刚好发新帖）；
+4. **最后删 users**（含历史重复行）：资料是「人的最后一条痕迹」，放最后好排障；
+5. 返回 `{ removed: { users, posts, applications, reviews, messages, contacts }, role, blacklisted }`。
+
+- 批量删除统一走 `removeByWhere` / `removeByValues` / `removeByIds`：**每轮取 100 个 `_id` → `_id in` 删**（绕开 where().remove() 条数上限）；
+  任何一集合报错只记日志、不中断整体注销，`removed` 是「确已删除」的真实条数。
+- `blacklist` 分流不变：`role === 'banned'` 注销才写（`reason='banned_user_deleted'`），普通用户不写（可同微信重注册）。
+- 客户端 `store.deleteAccount`：清 `CACHE_POSTS` / `CACHE_APPLICATIONS` 快照 + `clearAuthorCardCache(自己)` + `cache.posts = []`。
+
+**C. 前端缓存失效链路（`utils/store.js`，v1.9.1）**
+
+| 触发点 | 判定 | 动作 |
+|---|---|---|
+| `pullPosts`（`post.list`） | 返回行 `status === 'deleted'` | 不进缓存 + 清该帖发帖人名片快照 + `emitCachePurged('posts_deleted')` |
+| `fetchPostById`（`post.get`） | `post == null`（物理删除）或 `status === 'deleted'` | `purgePostCache()` → 剔内存缓存 + 重写 `CACHE_POSTS` 快照 + 清 `cache_author_{openid}` + 广播，返回 `null` |
+| `fetchAuthorProfile`（`getAuthorProfile`） | `ready === true` 但昵称与简历**同时为空** | `clearAuthorCardCache(authorOpenid)`（昵称必填，两个都空只可能是用户已不存在，不会误伤「只是没写简历」） |
+| `hydrateFromCache` | 旧快照里残留 `status === 'deleted'` | 灌入时直接丢弃（防首帧闪一条已删内容） |
+| `deleteAccount` | 注销成功 | 见上文 B 末条 |
+
+- 广播：`emitCachePurged({ type, postIds })`，页面 `onLoad` 订阅 `onCachePurged`、`onUnload` 退订（回调逐个 try/catch，单个出错不影响其他）。
+- 订阅方：`pages/index` → `renderFromCacheOnly()`；`pages/task` → `renderList()`（都**不发请求**，纯内存重渲染）。
+- **已知边界（已确认接受，勿擅自补请求）**：详情页是「缓存先行」，命中缓存不再发请求。极端时序（他删帖 → 我的列表未刷新 → 我刚好点进详情）会渲染一次旧内容，下次列表刷新即消失。为省云函数调用额度**不加入口二次校验**。
+
+**D. 任务页归档折叠规则（`pages/task`，v1.9.1）**
+
+默认折叠（`archived = true`，不占「待处理」视线）三种情况，`archiveReason` 依次优先：
+
+1. 关联帖子已删：云端下发 `postStatus === 'deleted'`，或 `fetchPostById` 直取返回 `null`（`this.missingPostIds`）→ 「关联信息已删除」；
+2. 已拒绝：`status === 'rejected'`（含帖子结束 / 删除时云端自动拒绝）→ 用 `rejectReason`，缺省「已拒绝」；
+3. 已完成：`accepted` + 帖子 `ended` + **我已评过价**（`canReview` 已失效）→ 「已完成」。
+
+- 不是硬删：底部「已隐藏 N 条已处理 / 已失效的申请」→ `toggleArchived`（纯内存 `showArchived` 切换，不发请求）；
+- 归档卡片加 `.app-card-archived`（置灰）+ `.archive-tag` 显示原因，长文本（申请附言 / 简历）不再展开；
+- **口径**：`pending` 永远是未归档；`accepted` 但帖子还没 `ended`、或还没评价的，继续留在主列表（那是待办）。
+
+**E. 新增的云端副本同步点**：`POST_ENDED_REJECT_REASON = '帖子已结束'` 存于 `cloudfunctions/post` 与 `cloudfunctions/application`；
+`POST_DELETED_REJECT_REASON = '帖子已删除'` 仅 `cloudfunctions/post`。改文案要两边一起改（任务页直接展示 `rejectReason`）。
+
 ---
 
 ## 5. 数据集合字典（10 个）
 
 | 集合 | 存什么 | 关键字段 | 客户端权限 |
 |---|---|---|---|
-| `posts` | 所有寻呼 / 组队 / 自荐 / 同好帖子（大厅数据源） | `_id`(=帖子 id) / `category` / `title` / `content` / `tags[]` / `authorOpenid` / `authorName` / `authorCampus` / `status`(draft·auditing·active·ended·deleted) / `heat` / `reportWeight` / `auditDismissed` / `auditReason` / `auditSource` / `secCheck` / `createTime` / `endTime`（**无 `contact`**） | 所有用户不可读写（读走 `post` 云函数 list / get） |
-| `post_contacts` | 帖子联系方式（v1.3.0 从 posts 拆出） | `_id`(=postId) / `_openid` / `authorOpenid` / `contact` / `createTime` | 所有用户不可读写（仅云函数 `publish` / `post`） |
-| `applications` | 报名（申请）流水：谁申请了哪个帖子、当前状态 | `postId` / `applicantId` / `receiverId` / `applicantName` / `applicantResume` / `applyNote` / `status`(pending·accepted·rejected) / `createTime` / `statusUpdateTime`（**新文档不存 `applicantContact` / `applicantStudentId`**） | 所有用户不可读写 |
+| `posts` | 所有寻呼 / 组队 / 自荐 / 同好帖子（大厅数据源） | `_id`(=帖子 id) / `category` / `title` / `content` / `tags[]` / `authorOpenid` / `authorName` / `authorCampus` / `status`(draft·auditing·active·ended·deleted) / `heat` / `reportWeight` / `auditDismissed` / `auditReason` / `auditSource` / `secCheck` / `createTime` / `endTime` / **`deleteTime` / `deleteReason`**（**无 `contact`**）| 所有用户不可读写（读走 `post` 云函数 list / get）；**【v1.9.1】`status='deleted'` 的文档已脱敏（`content='该内容已删除'` / `tags=[]`），仅作评价 / 举报上下文保留** |
+| `post_contacts` | 帖子联系方式（v1.3.0 从 posts 拆出） | `_id`(=postId) / `_openid` / `authorOpenid` / `contact` / `createTime` | 所有用户不可读写（仅云函数 `publish` / `post`）；**【v1.9.1】作者删帖 / 账号注销时该文档被物理删除** |
+| `applications` | 报名（申请）流水：谁申请了哪个帖子、当前状态 | `postId` / `applicantId` / `receiverId` / `applicantName` / `applicantResume` / `applyNote` / `status`(pending·accepted·rejected) / **`rejectReason` / `autoRejected` / `handledBy`**（v1.9.1：帖子结束 / 删除时云端自动拒绝留痕）/ `createTime` / `statusUpdateTime`（**新文档不存 `applicantContact` / `applicantStudentId`**）| 所有用户不可读写 |
 | `users` | 用户资料与账号状态（一个 openid 一条） | `_openid` / `nickname` / `campus` / `studentId` / `resume` / `contact` / `role`(user·banned·admin) / `warningCount` / `createTime` / `updateTime` | 所有用户不可读写 |
 | `reviews` | 双向评价记录（一次合作一条，提交后不可改） | `reviewId`(= reviewer_post_reviewee) / `postId` / `reviewerOpenid` / `revieweeOpenid` / `rating`(1 满意·0 不满意) / `content` / `createTime` | 所有用户不可读写 |
 | `reports` | 举报工单（谁举报了哪个帖子、原因、处理状态） | `postId` / `reporterOpenid` / `reason` / `desc` / `status`(pending…) / `postSnapshot` / `createTime` | 所有用户不可读写 |
@@ -238,6 +298,9 @@ app.js                     启动：wx.cloud.init(CLOUD_ENV) + store.init() 预�
 6. **文档数量口径**：本文第 4、5 节与代码保持一致（v1.7.0：**12 个云函数 / 10 个集合 / 8 个页面**）。`BETA_CHECKLIST.md`、`CODE_REVIEW.md` 等历史文档里的数量可能是旧值，以本文与代码为准。
 7. **字段兜底**：前端渲染一律走 `normalizeXxx` 与 `formatPost`，缺字段 / 未部署云函数不得白屏。
 8. **云函数部署不是编译**：改 `cloudfunctions/**` 必须重新「上传并部署」，否则线上仍是旧逻辑。
+9. **删除 / 注销不得退回「只改状态」**（v1.9.1 合规红线）：作者删帖必须脱敏 `content` + 物理删 `post_contacts`；账号注销必须物理删 `posts` 并级联清 `applications` / `reviews` / `messages`。详见第 4.1 节。
+10. **帖子结束 / 删除后必须关掉 `pending` 申请**：主战场在 `cloudfunctions/post`（`rejectPendingApplications`），`cloudfunctions/application.list` 还有第二道扫尾盖旧数据；新增任何「帖子进终态」的入口都要接上，否则任务页会重新长出「点了没反应」的卡片。
+11. **缓存失效只能走 `emitCachePurged`**：新增「云端判定某条已不存在」的逻辑时，务必调 `purgePostCache` + 广播，不要逐页面手写 setData，否则其他页面（大厅 / 任务页）会挂着旧内容。
 
 ---
 
@@ -255,23 +318,23 @@ app.js                     启动：wx.cloud.init(CLOUD_ENV) + store.init() 预�
 
 | 文件 | 行数 | 说明 |
 |---|---|---|
-| `utils/store.js` | 1804 | 最大文件，按第 3 节章节索引只读需要的段 |
+| `utils/store.js` | 1935 | 最大文件，按第 3 节章节索引只读需要的段 |
 | `cloudfunctions/admin/index.js` | 1326 | 管理后台（含审核队列 / 警告 / 封禁） |
-| `cloudfunctions/application/index.js` | 845 | 申请流转 |
-| `cloudfunctions/user/index.js` | 714 | 用户资料（含昵称全局查重）+ 账号注销 |
+| `cloudfunctions/application/index.js` | 1111 | 申请流转（含订阅消息下发 / 帖子结束扫尾） |
+| `cloudfunctions/user/index.js` | 797 | 用户资料（含昵称全局查重）+ 账号注销（物理删除级联） |
 | `pages/admin/admin.js` | 672 | 后台页 |
 | `cloudfunctions/publish/index.js` | 587 | 发布 + 词库副本 |
 | `pages/detail/detail.js` | 539 | 详情页 |
-| `pages/task/task.js` | 536 | 任务页 |
+| `pages/task/task.js` | 629 | 任务页（含归档折叠 / 双向评价） |
 | `cloudfunctions/review/index.js` | 477 | 评价 |
 | `utils/constants.js` | 473 | 字典 / 文案 / 词库 |
 | `cloudfunctions/report/index.js` | 316 | 举报 + 风控 |
-| `cloudfunctions/post/index.js` | 325 | 帖子状态唯写入口：结束 / 删除 / 联系方式 |
+| `cloudfunctions/post/index.js` | 529 | 帖子状态唯写入口：结束 / 删除 / 联系方式 / 自动拒 pending 申请 |
 | `pages/profile/profile.js` | 534 | 我的（含校区选择 / 注销 / 保存防连点） |
 | `pages/publish/publish.js` | 332 | 发布页（含本地草稿） |
 | `cloudfunctions/message/index.js` | 243 | 消息中心（通知 + 公告） |
 | `cloudfunctions/getAuthorProfile/index.js` | 238 | 发布者名片 |
-| `pages/index/index.js` | 236 | 大厅 |
+| `pages/index/index.js` | 459 | 大厅（缓存先行 + 缓存失效即时重渲染） |
 | `pages/messages/messages.js` | 163 | 消息中心页 |
 | `cloudfunctions/initDb/index.js` | 79 | 建集合 / 自检 |
 | `cloudfunctions/heat/index.js` | 45 | 热度 |

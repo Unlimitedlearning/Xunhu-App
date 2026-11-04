@@ -31,6 +31,11 @@ Page({
     activeTab: 0,
     sentList: [],
     receivedList: [],
+    // 【v1.9.1 保持清爽】已拒绝 / 已完成（accepted + 帖子结束 + 已评价）/ 关联帖子已删的申请
+    // 默认不占视线，只留一个「展开已处理」入口（showArchived 控制）
+    showArchived: false,
+    sentArchivedCount: 0,
+    receivedArchivedCount: 0,
     ready: false,      // 已登录 + 资料完善：满足才渲染申请列表
     guardTitle: '',
     guardTip: '',
@@ -44,6 +49,25 @@ Page({
     reviewRating: -1,                             // -1 未选（0 是「不满意」，不能用来表示未选）
     reviewContent: '',
     reviewSubmitting: false
+  },
+
+  /**
+   * 缓存失效订阅（v1.9.1）：云端判定某条帖子已删除 / 作者已注销时，store 会清本地缓存并回调这里，
+   * 页面立即重渲染，不用等下一次 onShow（否则屏幕上会挂着一条已经不存在的信息）。
+   * 退订必须在 onUnload 做，否则页面栈反复进出会累积回调。
+   */
+  onLoad: function () {
+    if (this.offCachePurged) return;
+    this.offCachePurged = store.onCachePurged(() => {
+      if (this.data.ready) this.renderList();
+    });
+  },
+
+  onUnload: function () {
+    if (this.offCachePurged) {
+      this.offCachePurged();
+      this.offCachePurged = null;
+    }
   },
 
   onShow: function () {
@@ -63,7 +87,7 @@ Page({
 
     if (!ready) {
       // 资料不全时不拉申请列表：联系方式拿不到，列表看了也用不了
-      this.setData({ sentList: [], receivedList: [] });
+      this.setData({ sentList: [], receivedList: [], sentArchivedCount: 0, receivedArchivedCount: 0 });
       this.promptGuard(isLogin);
       return;
     }
@@ -111,6 +135,12 @@ Page({
     this.setData({
       activeTab: Number(e.currentTarget.dataset.index)
     });
+  },
+
+  // 展开 / 收起「已处理 / 已失效」的申请（纯内存切换，不请求网络）
+  toggleArchived: function () {
+    this.setData({ showArchived: !this.data.showArchived });
+    this.renderList();
   },
 
   // 云端刷缓存 -> 同步渲染（只拉云端、不读本地快照：下拉刷新 / 页面停留后看到的都是最新状态）
@@ -172,11 +202,24 @@ Page({
       return store.fetchPostById(id);
     }));
 
-    if (DEV_DEBUG) {
-      results.forEach(function (post, index) {
-        if (!post) console.warn('[task][DEV] 帖子按 _id 直取失败（已删除 / postId 写错 / 无读权限）：', ids[index]);
-      });
-    }
+    // 【v1.9.1】把「云端确实查不到」的 postId 记下来：任务页据此把关联帖子已删的申请折叠起来。
+    // 只有本次真的发过请求的 id 才写，没查过的不能被当成「已删」。
+    this.missingPostIds = this.missingPostIds || {};
+    results.forEach(function (post, index) {
+      const id = ids[index];
+      if (post) {
+        delete this.missingPostIds[id];
+      } else {
+        this.missingPostIds[id] = true;
+        if (DEV_DEBUG) console.warn('[task][DEV] 帖子按 _id 直取失败（已删除 / postId 写错 / 无读权限）：', id);
+      }
+    }, this);
+  },
+
+  // 帖子已确认不存在（本次按 _id 直取返回 null 的那些）
+  isPostMissing: function (postId) {
+    if (!postId) return false;
+    return !!(this.missingPostIds && this.missingPostIds[postId]);
   },
 
   renderList: function () {
@@ -204,7 +247,7 @@ Page({
     }
 
     // Tab 1：我发出的申请（applicantId === 我）
-    const sentList = apps
+    const sentAll = apps
       .filter(function (app) {
         return app && app.applicantId === openid;
       })
@@ -212,16 +255,25 @@ Page({
       .sort((a, b) => b.createTime - a.createTime);
 
     // Tab 2：我收到的申请（receiverId === 我）
-    const receivedList = apps
+    const receivedAll = apps
       .filter(function (app) {
         return app && app.receiverId === openid;
       })
       .map(app => this.formatApplication(app, posts, 'received'))
       .sort((a, b) => b.createTime - a.createTime);
 
+    /* 【v1.9.1 清理冗余】已拒绝 / 已完成（accepted + 帖子已结束 + 已评价）/ 关联帖子已删除的申请
+     * 默认不列出来 —— 否则「已同意且已经评过价」的合作永远占着待处理的视线。
+     * 只留一个「展开已处理」入口，需要回顾时一点就能看，不是硬删。*/
+    const sentArchived = sentAll.filter(function (item) { return item.archived; });
+    const receivedArchived = receivedAll.filter(function (item) { return item.archived; });
+    const showArchived = !!this.data.showArchived;
+
     this.setData({
-      sentList: sentList,
-      receivedList: receivedList,
+      sentList: showArchived ? sentAll : sentAll.filter(function (item) { return !item.archived; }),
+      receivedList: showArchived ? receivedAll : receivedAll.filter(function (item) { return !item.archived; }),
+      sentArchivedCount: sentArchived.length,
+      receivedArchivedCount: receivedArchived.length,
       devInfo: devInfo
     });
   },
@@ -288,6 +340,23 @@ Page({
     const myReview = canReview ? store.findMyReviewByPost(app.postId, revieweeOpenid) : null;
     const hasReviewed = !!myReview || this.isReviewLocked(app.postId, revieweeOpenid);
 
+    /* ---- 归档判定（v1.9.1）----
+     * 三种情况默认折叠，不占「待处理」的视线：
+     *   1) 关联帖子已删（云端下发 postStatus === 'deleted'，或按 _id 直取确认不存在）；
+     *   2) 已被拒绝（含「帖子结束时被云端自动拒绝」，原因通过 rejectReason 下发）；
+     *   3) 已完成：已同意 + 帖子已结束 + 我已经评过价（评价入口已经用完，留着只是噪音）。*/
+    const postDeleted = postStatus === 'deleted' || this.isPostMissing(app.postId);
+    const finished = isAccepted && postEnded && hasReviewed;
+    const archived = postDeleted || status === 'rejected' || finished;
+    let archiveReason = '';
+    if (postDeleted) {
+      archiveReason = '关联信息已删除';
+    } else if (status === 'rejected') {
+      archiveReason = app.rejectReason || '已拒绝';
+    } else if (finished) {
+      archiveReason = '已完成';
+    }
+
     // DEV_DEBUG：按钮没出现时，直接算出是哪一条没过（顺序与 canReview 的判定一致）
     let reviewHint = '';
     if (DEV_DEBUG && !canReview) {
@@ -327,6 +396,13 @@ Page({
       contact: contact,
       studentId: studentId,
       createTime: app.createTime || 0,
+      // 归档（默认折叠）：页面根据 archived 分组，archiveReason 显示在卡片右上角
+      archived: archived,
+      archiveReason: archiveReason,
+      postDeleted: postDeleted,
+      // 已完成（已同意 + 帖子已结束 + 已评价）/ 云端自动拒绝（帖子已结束）：底部文案要用
+      finished: finished,
+      autoRejected: !!app.autoRejected,
       // 评价相关
       canReview: canReview,
       postEnded: postEnded,
